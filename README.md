@@ -58,8 +58,19 @@ This fork builds Linux x64 and macOS Apple Silicon archives. Use this
 repository's [releases](https://github.com/opencoredev/grok-build2/releases),
 not the upstream x.ai installer, to retain the custom runtime.
 
-Download the archive and its `.sha256` file. Verify the checksum before
-extracting it. On macOS use `shasum -a 256 -c FILE.sha256`; on Linux use
+The first release is pending. After it is published, install the latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opencoredev/grok-build2/main/install.sh | bash
+```
+
+The installer selects the archive for the current platform, verifies its
+SHA-256 checksum, and installs `grok` and `grok2` in `~/.local/bin`. It does not
+build from source or require provider credentials.
+
+To install without piping a script to Bash, download the archive and its
+`.sha256` file. Verify the checksum before extracting it. On macOS use
+`shasum -a 256 -c FILE.sha256`; on Linux use
 `sha256sum -c FILE.sha256`. Then run `bash install.sh` inside the extracted
 directory. The installer puts both `grok` and `grok2` on the same launcher in
 `~/.local/bin` and keeps `.previous` backups. Add that directory to `PATH`.

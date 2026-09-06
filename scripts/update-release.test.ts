@@ -7,6 +7,7 @@ import { packageRelease } from "./release";
 
 const root = resolve(import.meta.dir, "..");
 const updater = join(root, "scripts/update-release.rb");
+const installer = join(root, "install.sh");
 const target = process.platform === "darwin" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-gnu";
 const temps: string[] = [];
 function temp() { const dir = mkdtempSync(join(tmpdir(), "grok-update-test-")); temps.push(dir); return dir; }
@@ -48,6 +49,16 @@ class FixtureRelease < Grok2Release
 end
 FixtureRelease.new(ARGV[0]).update(ARGV[1] == 'auto')
 `;
+const bootstrapAdapter = `
+class FixtureRelease < Grok2Release
+  def download(url, destination, limit)
+    raise 'Update server returned HTTP 404' if ENV['NO_RELEASE'] == '1' && url.end_with?('/latest')
+    name = url.end_with?('/latest') ? 'latest.json' : File.basename(URI(url).path)
+    FileUtils.cp(File.join(ENV.fetch('FEED'), name), destination)
+  end
+end
+FixtureRelease.new(ARGV[0]).bootstrap(ARGV[1])
+`;
 function feed(fx: ReturnType<typeof fixture>, version = "0.1.1", binaryVersion = version) {
   const release = fx.payload(version, binaryVersion);
   const dir = join(fx.dir, `feed-${version}`); mkdirSync(dir);
@@ -58,6 +69,68 @@ function feed(fx: ReturnType<typeof fixture>, version = "0.1.1", binaryVersion =
   return { dir, name, metadata, ...release };
 }
 function current(fx: ReturnType<typeof fixture>) { return readlinkSync(join(fx.install, "current")); }
+
+test("bootstrap installs the latest release through the root installer", () => {
+  const fx = fixture(); const next = feed(fx); const install = join(fx.dir, "fresh"); const commands = join(fx.dir, "fresh-bin");
+  const mocks = join(fx.dir, "bootstrap-mocks"); mkdirSync(mocks);
+  const fetchedUpdater = join(fx.dir, "fetched-update.rb");
+  writeFileSync(fetchedUpdater, `require ${JSON.stringify(updater)}\nraise 'unexpected action' unless ARGV.shift == 'bootstrap'\n${bootstrapAdapter}`);
+  const curlLog = join(fx.dir, "curl-url");
+  writeFileSync(join(mocks, "curl"), `#!/bin/sh
+destination=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) destination="$2"; shift 2 ;;
+    https://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' "$url" > "$CURL_LOG"
+cp "$FAKE_UPDATER" "$destination"
+`);
+  chmodSync(join(mocks, "curl"), 0o755);
+  const result = spawnSync("bash", [installer], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${mocks}:${process.env.PATH}`, FEED: next.dir, CURL_LOG: curlLog, FAKE_UPDATER: fetchedUpdater, GROK2_INSTALL_DIR: install, GROK2_BIN_DIR: commands },
+  });
+  expect(result.stderr).toBe(""); expect(result.status).toBe(0);
+  expect(readFileSync(curlLog, "utf8").trim()).toBe("https://raw.githubusercontent.com/opencoredev/grok-build2/main/scripts/update-release.rb");
+  expect(readFileSync(join(install, "current", "release.json"), "utf8")).toContain('"0.1.1"');
+  expect(realpathSync(join(commands, "grok"))).toBe(realpathSync(join(commands, "grok2")));
+  expect(spawnSync(join(commands, "grok"), ["--resume", "saved session"], { encoding: "utf8" }).stdout).toBe("0.1.1\n--resume\nsaved session\n");
+});
+
+test("bootstrap rejects unsupported systems before network access", () => {
+  const dir = temp(); const mocks = join(dir, "mocks"); mkdirSync(mocks);
+  const network = join(dir, "network");
+  writeFileSync(join(mocks, "uname"), "#!/bin/sh\nif [ \"$1\" = -s ]; then printf 'FreeBSD\\n'; else printf 'x86_64\\n'; fi\n");
+  writeFileSync(join(mocks, "curl"), `#!/bin/sh\ntouch '${network}'\nexit 1\n`);
+  for (const name of ["uname", "curl"]) chmodSync(join(mocks, name), 0o755);
+  const result = spawnSync("bash", [installer], { encoding: "utf8", env: { ...process.env, PATH: `${mocks}:${process.env.PATH}` } });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("supports only Linux x64 and macOS Apple Silicon");
+  expect(existsSync(network)).toBe(false);
+});
+
+test("bootstrap missing release leaves installed commands intact", () => {
+  const fx = fixture(); const before = current(fx); const grok = readlinkSync(join(fx.commands, "grok")); const grok2 = readlinkSync(join(fx.commands, "grok2"));
+  const result = ruby(bootstrapAdapter, [fx.install, fx.commands], { FEED: fx.dir, NO_RELEASE: "1" });
+  expect(result.status).not.toBe(0); expect(result.stderr).toContain("No published Grok Build 2 release is available");
+  expect(current(fx)).toBe(before);
+  expect(readlinkSync(join(fx.commands, "grok"))).toBe(grok);
+  expect(readlinkSync(join(fx.commands, "grok2"))).toBe(grok2);
+});
+
+test("bootstrap corrupt checksum leaves installed commands intact", () => {
+  const fx = fixture(); const before = current(fx); const next = feed(fx); const grok = readlinkSync(join(fx.commands, "grok")); const grok2 = readlinkSync(join(fx.commands, "grok2"));
+  writeFileSync(join(next.dir, `${next.name}.sha256`), `${"0".repeat(64)}  ${next.name}\n`);
+  const result = ruby(bootstrapAdapter, [fx.install, fx.commands], { FEED: next.dir });
+  expect(result.status).not.toBe(0); expect(result.stderr).toContain("checksum");
+  expect(current(fx)).toBe(before);
+  expect(readlinkSync(join(fx.commands, "grok"))).toBe(grok);
+  expect(readlinkSync(join(fx.commands, "grok2"))).toBe(grok2);
+});
 
 test("update switches a complete release, keeps aliases and supports rollback", () => {
   const fx = fixture(); const before = current(fx); const next = feed(fx);

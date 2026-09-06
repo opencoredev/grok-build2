@@ -50,6 +50,14 @@ class Grok2Release
     data
   end
 
+  def platform_target
+    cpu = RbConfig::CONFIG['host_cpu']
+    os = RbConfig::CONFIG['host_os']
+    return 'aarch64-apple-darwin' if os.include?('darwin') && ['arm64', 'aarch64'].include?(cpu)
+    return 'x86_64-unknown-linux-gnu' if os.include?('linux') && ['x86_64', 'amd64'].include?(cpu)
+    raise 'Grok Build 2 supports only Linux x64 and macOS Apple Silicon'
+  end
+
   def active(name = 'current')
     if name == 'previous'
       current = active
@@ -104,14 +112,7 @@ class Grok2Release
   end
 
   def smoke_test(source, data)
-    cpu = RbConfig::CONFIG['host_cpu']
-    os = RbConfig::CONFIG['host_os']
-    target = if os.include?('darwin') && ['arm64', 'aarch64'].include?(cpu)
-      'aarch64-apple-darwin'
-    elsif os.include?('linux') && cpu == 'x86_64'
-      'x86_64-unknown-linux-gnu'
-    end
-    raise 'Release does not support this platform' unless data['target'] == target
+    raise 'Release does not support this platform' unless data['target'] == platform_target
     Dir.mktmpdir('.smoke-', @root) do |directory|
       output = File.join(directory, 'version')
       pid = Process.spawn({'GROK_DISABLE_AUTOUPDATER' => '1', 'GROK2_AUTO_UPDATE' => '0'},
@@ -269,6 +270,53 @@ class Grok2Release
     validate_payload(directory)
   end
 
+  def latest_release(stage)
+    metadata = File.join(stage, 'latest.json')
+    begin
+      download("https://api.github.com/repos/#{REPO}/releases/latest", metadata, 2 * 1024 * 1024)
+    rescue RuntimeError => error
+      raise 'No published Grok Build 2 release is available' if error.message == 'Update server returned HTTP 404'
+      raise
+    end
+    release = JSON.parse(File.read(metadata))
+    raise 'Latest release is not stable' if release['draft'] || release['prerelease']
+    tag = release.fetch('tag_name')
+    raise 'Invalid release tag' unless tag.is_a?(String) && tag.start_with?('v')
+    latest = tag[1..-1]
+    version(latest)
+    [release, tag, latest]
+  end
+
+  def download_release(stage, release, tag, latest, target)
+    name = "grok-build2-#{latest}-#{target}.tar.gz"
+    [name, "#{name}.sha256"].each do |asset_name|
+      matches = release.fetch('assets').select { |asset| asset['name'] == asset_name }
+      expected = "https://github.com/#{REPO}/releases/download/#{tag}/#{asset_name}"
+      raise "Missing or invalid release asset: #{asset_name}" unless matches.size == 1 && matches[0]['browser_download_url'] == expected
+      download(expected, File.join(stage, asset_name), asset_name.end_with?('.sha256') ? 1024 : MAX_ARCHIVE)
+    end
+    checksum = File.read(File.join(stage, "#{name}.sha256"))
+    match = checksum.match(/\A([a-f0-9]{64})  #{Regexp.escape(name)}\n?\z/)
+    archive = File.join(stage, name)
+    raise 'Release checksum verification failed' unless match && Digest::SHA256.file(archive).hexdigest == match[1]
+    payload = File.join(stage, 'payload')
+    Dir.mkdir(payload)
+    data = unpack(archive, payload)
+    raise 'Release identity mismatch' unless data['version'] == latest && data['target'] == target
+    payload
+  end
+
+  def bootstrap(commands)
+    target = platform_target
+    Dir.mktmpdir('grok-build2-download-') do |stage|
+      Timeout.timeout(120) do
+        release, tag, latest = latest_release(stage)
+        payload = download_release(stage, release, tag, latest, target)
+        install(payload, commands)
+      end
+    end
+  end
+
   def update(automatic = false)
     result = locked do
       current = active
@@ -282,32 +330,12 @@ class Grok2Release
       File.write(stamp, '')
       Dir.mktmpdir('.download-', @root) do |stage|
         Timeout.timeout(120) do
-          metadata = File.join(stage, 'latest.json')
-          download("https://api.github.com/repos/#{REPO}/releases/latest", metadata, 2 * 1024 * 1024)
-          release = JSON.parse(File.read(metadata))
-          raise 'Latest release is not stable' if release['draft'] || release['prerelease']
-          tag = release.fetch('tag_name')
-          raise 'Invalid release tag' unless tag.is_a?(String) && tag.start_with?('v')
-          latest = tag[1..-1]
+          release, tag, latest = latest_release(stage)
           if (version(latest) <=> version(installed['version'])) != 1
             puts "Grok Build 2 #{installed['version']} is current." unless automatic
             next
           end
-          name = "grok-build2-#{latest}-#{installed['target']}.tar.gz"
-          [name, "#{name}.sha256"].each do |asset_name|
-            matches = release.fetch('assets').select { |asset| asset['name'] == asset_name }
-            expected = "https://github.com/#{REPO}/releases/download/#{tag}/#{asset_name}"
-            raise "Missing or invalid release asset: #{asset_name}" unless matches.size == 1 && matches[0]['browser_download_url'] == expected
-            download(expected, File.join(stage, asset_name), asset_name.end_with?('.sha256') ? 1024 : MAX_ARCHIVE)
-          end
-          checksum = File.read(File.join(stage, "#{name}.sha256"))
-          match = checksum.match(/\A([a-f0-9]{64})  #{Regexp.escape(name)}\n?\z/)
-          archive = File.join(stage, name)
-          raise 'Release checksum verification failed' unless match && Digest::SHA256.file(archive).hexdigest == match[1]
-          payload = File.join(stage, 'payload')
-          Dir.mkdir(payload)
-          data = unpack(archive, payload)
-          raise 'Release identity mismatch' unless data['version'] == latest && data['target'] == installed['target']
+          payload = download_release(stage, release, tag, latest, installed['target'])
           activate(payload)
           puts "Installed Grok Build 2 #{latest}. Restart to use it."
         end
@@ -325,13 +353,15 @@ if $PROGRAM_NAME == __FILE__
     updater = Grok2Release.new(root)
     case action
     when 'install' then updater.install(args.fetch(0), args.fetch(1))
+    when 'bootstrap' then updater.bootstrap(args.fetch(0))
     when 'update' then updater.update(false)
     when 'auto' then updater.update(true)
     when 'rollback' then updater.rollback
     else raise 'Unknown updater command'
     end
   rescue StandardError => error
-    warn "grok2 update: #{error.message}"
+    operation = action == 'bootstrap' ? 'install' : 'update'
+    warn "grok2 #{operation}: #{error.message}"
     exit 1
   end
 end
