@@ -98,7 +98,14 @@ cp "$FAKE_UPDATER" "$destination"
   expect(readFileSync(curlLog, "utf8").trim()).toBe("https://raw.githubusercontent.com/opencoredev/grok-build2/main/scripts/update-release.rb");
   expect(readFileSync(join(install, "current", "release.json"), "utf8")).toContain('"0.1.1"');
   expect(realpathSync(join(commands, "grok"))).toBe(realpathSync(join(commands, "grok2")));
-  expect(spawnSync(join(commands, "grok"), ["--resume", "saved session"], { encoding: "utf8" }).stdout).toBe("0.1.1\n--resume\nsaved session\n");
+  writeFileSync(join(mocks, "curl"), '#!/bin/sh\nprintf 200\n');
+  const config = join(fx.dir, "proxy.yaml"); writeFileSync(config, "api-keys: [test-only-key]\n");
+  const resumed = spawnSync(join(commands, "grok"), ["--resume", "saved session"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${mocks}:${process.env.PATH}`, CLI_PROXY_CONFIG: config, CLI_PROXY_BIN: join(install, "current", "xai-grok-pager"), GROK2_AUTO_UPDATE: "0" },
+  });
+  expect(resumed.stderr).toBe(""); expect(resumed.status).toBe(0);
+  expect(resumed.stdout).toBe("0.1.1\n--resume\nsaved session\n");
 });
 
 test("bootstrap rejects unsupported systems before network access", () => {
