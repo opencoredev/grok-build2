@@ -30,7 +30,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config libasound2-dev libudev-dev cmake clang
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config libasound2-dev libudev-dev cmake clang ruby
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt

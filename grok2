@@ -7,7 +7,7 @@ while [[ -L "$launcher_path" ]]; do
   launcher_path="$(readlink "$launcher_path")"
   [[ "$launcher_path" == /* ]] || launcher_path="$launcher_dir/$launcher_path"
 done
-REPO_DIR="$(cd -- "$(dirname -- "$launcher_path")" && pwd)"
+REPO_DIR="$(cd -- "$(dirname -- "$launcher_path")" && pwd -P)"
 PROXY_HOME="${CLI_PROXY_HOME:-${HOME:?}/.cli-proxy-api}"
 PROXY_BIN="${CLI_PROXY_BIN:-$PROXY_HOME/bin/cli-proxy-api}"
 PROXY_CONFIG="${CLI_PROXY_CONFIG:-$PROXY_HOME/config.yaml}"
@@ -17,6 +17,11 @@ PROXY_SERVICE_LABEL="${CLI_PROXY_SERVICE_LABEL:-com.leo.cliproxyapi}"
 PROXY_SERVICE_TARGET="gui/$(id -u)/$PROXY_SERVICE_LABEL"
 GROK_INSTALL_DIR="${GROK2_INSTALL_DIR:-${HOME:?}/.grok/grok2}"
 GROK_BINARY="${GROK2_BINARY:-$GROK_INSTALL_DIR/xai-grok-pager}"
+if [[ -f "$REPO_DIR/release.json" && -f "$REPO_DIR/update.rb" ]]; then
+  # Pin this launch to one complete release while a background update activates.
+  GROK_INSTALL_DIR="$(cd -- "$REPO_DIR/../.." && pwd -P)"
+  GROK_BINARY="${GROK2_BINARY:-$REPO_DIR/xai-grok-pager}"
+fi
 GROK_BUILD_TARGET_DIR="${HOME:?}/.cache/grok2-target"
 CARGO_BINARY="$GROK_BUILD_TARGET_DIR/debug/xai-grok-pager"
 export CLI_PROXY_BIN="$PROXY_BIN"
@@ -40,6 +45,8 @@ Usage:
   ./grok2 --single "PROMPT"       Run one prompt and exit
   ./grok2 login [PROVIDER]        Sign in to a subscription
   grok2 build                     Rebuild and install the Grok 2 binary
+  grok2 update                    Install the latest fork release now
+  grok2 rollback                  Restore the previous installed release
   ./grok2 check                   Check the local setup
 
 Login providers: all, codex, claude, devin, xai, cursor
@@ -124,6 +131,7 @@ login() {
 
 build_grok() {
   [[ -f "$REPO_DIR/Cargo.toml" ]] || die "build requires a source checkout; run its ./grok2 build"
+  [[ ! -L "$GROK_INSTALL_DIR/current" ]] || die "use grok2 update for this release install, or set GROK2_INSTALL_DIR for a separate source build"
   require_command cargo
   cargo build --manifest-path "$REPO_DIR/Cargo.toml" \
     --target-dir "$GROK_BUILD_TARGET_DIR" \
@@ -151,6 +159,12 @@ case "${1:-}" in
   build)
     build_grok
     exit 0
+    ;;
+  update|rollback)
+    require_command ruby
+    updater="$REPO_DIR/update.rb"
+    [[ -f "$updater" ]] || updater="$REPO_DIR/scripts/update-release.rb"
+    exec ruby "$updater" "$1" "$GROK_INSTALL_DIR"
     ;;
 esac
 
@@ -201,4 +215,16 @@ esac
 start_proxy
 load_proxy_key
 ensure_grok_binary
+auto_update="${GROK2_AUTO_UPDATE:-1}"
+for argument in "$@"; do
+  [[ "$argument" != "--no-auto-update" ]] || auto_update=0
+done
+if [[ "$auto_update" != "0" && -z "${GROK2_BINARY:-}" && -f "$REPO_DIR/release.json" && -L "$GROK_INSTALL_DIR/current" ]]; then
+  # The updater keeps no terminal pipes open and sends no GitHub auth headers.
+  (
+    unset OPENAI_API_KEY ANTHROPIC_API_KEY XAI_API_KEY
+    nohup ruby "$REPO_DIR/update.rb" auto "$GROK_INSTALL_DIR" \
+      </dev/null >>"$GROK_INSTALL_DIR/update.log" 2>&1 &
+  ) || true
+fi
 exec "$GROK_BINARY" "$@"

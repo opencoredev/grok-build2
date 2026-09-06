@@ -47,11 +47,12 @@ test("source launcher resolves symlinks before invoking Cargo", () => {
 test("archive installs both command names and preserves resume arguments without building", () => {
   const workspace = temp();
   mkdirSync(join(workspace, "scripts"));
-  for (const file of ["grok2", "LICENSE", "CHANGELOG.md", "THIRD-PARTY-NOTICES", "SOURCE_REV", "README.md", "scripts/install-release.sh"]) cpSync(join(root, file), join(workspace, file));
+  for (const file of ["grok2", "LICENSE", "CHANGELOG.md", "THIRD-PARTY-NOTICES", "SOURCE_REV", "README.md", "scripts/install-release.sh", "scripts/update-release.rb"]) cpSync(join(root, file), join(workspace, file));
   const fakeBinary = join(workspace, "fake-binary");
-  writeFileSync(fakeBinary, '#!/bin/sh\n[ "$GROK_DISABLE_AUTOUPDATER" = 1 ] || exit 9\n[ "$OPENAI_API_KEY" = test-only-key ] || exit 10\nprintf "%s\\n" "$@"\n');
+  writeFileSync(fakeBinary, '#!/bin/sh\n[ "$GROK_DISABLE_AUTOUPDATER" = 1 ] || exit 9\nif [ "$1" = --version ]; then echo "grok 0.1.0"; exit; fi\n[ "$OPENAI_API_KEY" = test-only-key ] || exit 10\nprintf "%s\\n" "$@"\n');
   chmodSync(fakeBinary, 0o755);
-  const archive = packageRelease(workspace, fakeBinary, "0.1.0", "aarch64-apple-darwin");
+  const target = process.platform === "darwin" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-gnu";
+  const archive = packageRelease(workspace, fakeBinary, "0.1.0", target);
   expect(readFileSync(`${archive}.sha256`, "utf8").split(" ")[0]).toBe(createHash("sha256").update(readFileSync(archive)).digest("hex"));
   const unpack = join(workspace, "unpack"); mkdirSync(unpack);
   expect(spawnSync("tar", ["-xzf", archive, "-C", unpack]).status).toBe(0);

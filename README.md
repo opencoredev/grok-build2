@@ -78,9 +78,27 @@ grok --resume SESSION_ID
 
 The archive uses the version in `package.json`, injected into Rust with
 `GROK_VERSION`. See [CHANGELOG.md](CHANGELOG.md) for fork release notes.
-The launcher disables the upstream auto-updater. Install the next fork archive
-to update; it does not rebuild on launch. These initial macOS archives are not
-Developer ID signed or notarized.
+After the first archive install, normal launches check this fork for updates in
+the background, at most once every six hours. A verified release installs as a
+complete version directory. The next launch uses it; running sessions stay on
+their current version. Failed checks do not block launch. The launcher never
+uses the upstream updater or rebuilds on launch.
+
+Run `grok2 update` to check and install now. Run `grok2 rollback` to restore the
+previous release and pause automatic updates. A successful `grok2 update`
+resumes them. Set `GROK2_AUTO_UPDATE=0` or pass `--no-auto-update` to disable
+background checks.
+
+Downloads use only this repository over HTTPS. The updater verifies the archive
+checksum, file paths, target, and binary version before switching `current`.
+Checksums are not code signatures. These initial macOS archives are not
+Developer ID signed or notarized. Errors are recorded in
+`~/.grok/grok2/update.log`. Old version directories remain for running sessions
+and rollback; updates do not delete them.
+
+Source builds and `GROK2_BINARY` overrides do not auto-update. Existing flat
+installations need one archive install to enable updates. Use a separate
+`GROK2_INSTALL_DIR` for source builds after installing a managed release.
 
 ## CI and version packages
 

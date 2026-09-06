@@ -22,9 +22,13 @@ export function packageRelease(root: string, binary: string, version: string, ta
       copyFileSync(join(root, file), join(stage, file));
     }
     copyFileSync(join(root, "scripts/install-release.sh"), join(stage, "install.sh"));
+    copyFileSync(join(root, "scripts/update-release.rb"), join(stage, "update.rb"));
+    writeFileSync(join(stage, "release.json"), JSON.stringify({ schema: 1, product: "grok-build2", version, target }) + "\n");
     copyFileSync(binary, join(stage, "xai-grok-pager"));
     for (const file of ["grok2", "install.sh", "xai-grok-pager"]) chmodSync(join(stage, file), 0o755);
-    const result = spawnSync("tar", ["-czf", output, "-C", stage, "."], { stdio: "inherit" });
+    const result = spawnSync("tar", ["--format=ustar", "-czf", output, "-C", stage, "."], {
+      stdio: "inherit", env: { ...process.env, COPYFILE_DISABLE: "1" },
+    });
     if (result.status !== 0) throw new Error("Archive creation failed");
     const digest = createHash("sha256").update(readFileSync(output)).digest("hex");
     writeFileSync(`${output}.sha256`, `${digest}  ${basename(output)}\n`);
