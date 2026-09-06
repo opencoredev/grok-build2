@@ -78,7 +78,7 @@ jobs:
       - run: cargo install dotslash --version 0.5.7 --locked
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.0
       - run: cargo build --locked --profile release-dist --features release-dist -p xai-grok-pager-bin --target ${{ matrix.target }}
       - name: Check binary version
         run: target/${{ matrix.target }}/release-dist/xai-grok-pager --version | grep -F "$GROK_VERSION"
