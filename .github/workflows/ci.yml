@@ -15,7 +15,7 @@ concurrency:
 jobs:
   test:
     name: Rust and release tests
-    runs-on: tenki-standard-medium-4c-8g
+    runs-on: tenki-standard-large-8c-16g
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
