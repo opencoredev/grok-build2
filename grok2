@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+launcher_path="${BASH_SOURCE[0]}"
+while [[ -L "$launcher_path" ]]; do
+  launcher_dir="$(cd -- "$(dirname -- "$launcher_path")" && pwd)"
+  launcher_path="$(readlink "$launcher_path")"
+  [[ "$launcher_path" == /* ]] || launcher_path="$launcher_dir/$launcher_path"
+done
+REPO_DIR="$(cd -- "$(dirname -- "$launcher_path")" && pwd)"
 PROXY_HOME="${CLI_PROXY_HOME:-${HOME:?}/.cli-proxy-api}"
 PROXY_BIN="${CLI_PROXY_BIN:-$PROXY_HOME/bin/cli-proxy-api}"
 PROXY_CONFIG="${CLI_PROXY_CONFIG:-$PROXY_HOME/config.yaml}"

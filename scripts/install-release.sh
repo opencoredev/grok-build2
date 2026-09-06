@@ -7,6 +7,12 @@ command_dir="${GROK2_BIN_DIR:-${HOME:?}/.local/bin}"
 test -x "$source_dir/xai-grok-pager"
 test -f "$source_dir/grok2"
 mkdir -p "$install_dir" "$command_dir"
+install_dir="$(cd -- "$install_dir" && pwd -P)"
+command_dir="$(cd -- "$command_dir" && pwd -P)"
+if [[ "$install_dir" == "$command_dir" ]]; then
+  printf 'Install and command directories must differ.\n' >&2
+  exit 1
+fi
 
 stage="$(mktemp -d "$install_dir/.install.XXXXXX")"
 trap 'rm -rf -- "$stage"' EXIT

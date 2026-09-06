@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -30,6 +30,20 @@ test("Changesets versions the private binary package without npm publishing", ()
   expect(existsSync(join(workspace, ".changeset/test.md"))).toBe(false);
 });
 
+test("source launcher resolves symlinks before invoking Cargo", () => {
+  const workspace = temp();
+  const source = join(workspace, "source"); const commands = join(workspace, "commands");
+  mkdirSync(source); mkdirSync(commands);
+  cpSync(join(root, "grok2"), join(source, "grok2"));
+  chmodSync(join(source, "grok2"), 0o755);
+  writeFileSync(join(source, "Cargo.toml"), "[workspace]\n");
+  writeFileSync(join(commands, "cargo"), '#!/bin/sh\nexit 37\n');
+  chmodSync(join(commands, "cargo"), 0o755);
+  symlinkSync("../source/grok2", join(commands, "grok"));
+  const result = spawnSync(join(commands, "grok"), ["build"], { env: { ...process.env, PATH: `${commands}:${process.env.PATH}` } });
+  expect(result.status).toBe(37);
+});
+
 test("archive installs both command names and preserves resume arguments without building", () => {
   const workspace = temp();
   mkdirSync(join(workspace, "scripts"));
@@ -43,9 +57,13 @@ test("archive installs both command names and preserves resume arguments without
   expect(spawnSync("tar", ["-xzf", archive, "-C", unpack]).status).toBe(0);
   const install = join(workspace, "installed"); const commands = join(workspace, "commands");
   const env = { ...process.env, GROK2_INSTALL_DIR: install, GROK2_BIN_DIR: commands };
+  const badInstall = spawnSync("bash", [join(unpack, "install.sh")], { env: { ...env, GROK2_BIN_DIR: install }, encoding: "utf8" });
+  expect(badInstall.status).toBe(1);
+  expect(badInstall.stderr).toContain("directories must differ");
+  expect(existsSync(join(install, "grok2"))).toBe(false);
   expect(spawnSync("bash", [join(unpack, "install.sh")], { env }).status).toBe(0);
-  expect(readlinkSync(join(commands, "grok"))).toBe(join(install, "grok2"));
-  expect(readlinkSync(join(commands, "grok2"))).toBe(join(install, "grok2"));
+  expect(readlinkSync(join(commands, "grok"))).toBe(join(realpathSync(install), "grok2"));
+  expect(readlinkSync(join(commands, "grok2"))).toBe(join(realpathSync(install), "grok2"));
   const mocks = join(workspace, "mocks"); mkdirSync(mocks);
   writeFileSync(join(mocks, "curl"), '#!/bin/sh\nprintf 200\n');
   writeFileSync(join(mocks, "ruby"), '#!/bin/sh\nprintf test-only-key\n');
