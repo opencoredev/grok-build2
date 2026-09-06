@@ -945,6 +945,49 @@ impl SessionActor {
             BuiltinAction::GoalResume => {
                 unreachable!("GoalResume is intercepted in handle_prompt")
             }
+            BuiltinAction::GoalComplete => {
+                let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
+                use crate::session::goal_tracker::GoalStatus;
+                let (msg, changed) = {
+                    let mut tracker = self.goal_tracker.lock();
+                    match tracker.status() {
+                        Some(GoalStatus::Active)
+                        | Some(GoalStatus::UserPaused)
+                        | Some(GoalStatus::BackOffPaused)
+                        | Some(GoalStatus::NoProgressPaused)
+                        | Some(GoalStatus::InfraPaused)
+                        | Some(GoalStatus::Blocked) => {
+                            tracker.complete();
+                            ("Goal marked complete.", true)
+                        }
+                        Some(GoalStatus::Complete) => ("Goal is already complete.", false),
+                        Some(GoalStatus::BudgetLimited) => (
+                            "Goal is budget-limited. Use /goal clear to remove it.",
+                            false,
+                        ),
+                        None => ("No goal is currently set.", false),
+                    }
+                };
+                if changed {
+                    self.goal_continuation_streak
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    self.goal_blocked_streak
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    self.goal_turn_task_ids.lock().clear();
+                    self.clear_pending_classifier_completions();
+                    let (tokens_used, finished) = self.goal_tokens(current_tokens);
+                    self.prune_subagent_records_for_active_goal();
+                    self.set_goal_loop_active_resource(false).await;
+                    self.prune_subagent_records_for_active_goal();
+                    self.goal_notify_sender().emit_goal_updated(
+                        &mut self.goal_tracker.lock(),
+                        tokens_used,
+                        finished,
+                    );
+                }
+                self.send_host_turn_slash_command_output(msg).await;
+                ok_end_turn(0, None)
+            }
             BuiltinAction::GoalClear => {
                 let (respond_to, deleted) = tokio::sync::oneshot::channel();
                 if self

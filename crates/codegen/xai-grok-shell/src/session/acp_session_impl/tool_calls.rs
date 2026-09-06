@@ -2727,6 +2727,7 @@ impl SessionActor {
             tool_parsed_args,
             model_output_override,
         } = args;
+        let output_replaced = model_output_override.is_some();
         let (mut result, mut tool_layer_images) = drained.into_parts();
         let consumed_ids =
             xai_grok_tools::reminders::task_completion::consumed_completion_ids(&result.output);
@@ -2760,6 +2761,15 @@ impl SessionActor {
         if let Some(mut tool_update) =
             acp_tool_update(&result.output, call_id, path_rewriter.as_ref(), tool_meta)
         {
+            if !output_replaced && !tool_layer_images.is_empty() {
+                let content = tool_update.fields.content.get_or_insert_with(Vec::new);
+                content.extend(tool_layer_images.iter().map(|image| {
+                    acp::ToolCallContent::from(acp::ContentBlock::Image(acp::ImageContent::new(
+                        image.data.clone(),
+                        image.mime_type.clone(),
+                    )))
+                }));
+            }
             if tool_update.fields.status == Some(acp::ToolCallStatus::Failed) {
                 tracing::error!(
                     session_id = %self.session_info.id.0,
@@ -2804,7 +2814,6 @@ impl SessionActor {
             self.send_update(acp::SessionUpdate::Plan(acp_plan), None)
                 .await;
         }
-        let output_replaced = model_output_override.is_some();
         if let Some(replacement) = model_output_override {
             result.prompt_text =
                 substitute_rendered_output(&result.prompt_text, &result.output, replacement);

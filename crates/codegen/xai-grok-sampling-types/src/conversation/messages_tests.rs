@@ -11,6 +11,73 @@ fn messages_test_request(reasoning_effort: Option<crate::ReasoningEffort>) -> Co
 }
 
 #[test]
+fn messages_request_drops_nameless_tool_call_and_its_result() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("Inspect the repository"),
+        ConversationItem::Assistant(AssistantItem {
+            content: "I will inspect it.".into(),
+            tool_calls: vec![ToolCall {
+                id: "".into(),
+                name: String::new(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            }],
+            model_id: None,
+            model_fingerprint: None,
+            reasoning_effort: None,
+        }),
+        ConversationItem::tool_result("", "Tool not found"),
+        ConversationItem::user("Continue"),
+    ])
+    .with_model("messages-compatible-model");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let blocks = json["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .collect::<Vec<_>>();
+
+    assert!(
+        blocks.iter().all(|block| block["type"] != "tool_use"),
+        "a blank tool name must never reach the Anthropic request: {json:#}"
+    );
+    assert!(
+        blocks.iter().all(|block| block["type"] != "tool_result"),
+        "the paired result must be removed with its invalid tool call: {json:#}"
+    );
+    assert!(
+        json.to_string().contains("I will inspect it."),
+        "valid assistant text must survive the repair"
+    );
+}
+
+#[test]
+fn messages_request_drops_tool_call_with_empty_id_and_its_result() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::Assistant(AssistantItem {
+            content: "I will inspect it.".into(),
+            tool_calls: vec![ToolCall {
+                id: "".into(),
+                name: "run_terminal_command".to_string(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            }],
+            model_id: None,
+            model_fingerprint: None,
+            reasoning_effort: None,
+        }),
+        ConversationItem::tool_result("", "Tool output"),
+    ])
+    .with_model("messages-compatible-model");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let encoded = json.to_string();
+    assert!(!encoded.contains("tool_use"), "{json:#}");
+    assert!(!encoded.contains("tool_result"), "{json:#}");
+}
+
+#[test]
 fn json_schema_and_reasoning_effort_are_orthogonal_in_output_config() {
     let schema = serde_json::json!({
         "type": "object",

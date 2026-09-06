@@ -1167,7 +1167,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 header_injector: None,
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, false, true, 85)
+                .handle_set_session_model(cfg, false, false, false, true, "Model".into(), 85)
                 .await;
 
             assert!(
@@ -1175,6 +1175,62 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 "a model switch must invalidate the per-model BYOK memo so the next \
                  reconstruct recomputes under the current config"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn set_session_model_rewrites_the_active_model_identity() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_method_and_credentials(
+                None,
+                "cached_token",
+                xai_chat_state::AuthType::SessionToken,
+                "k".to_string(),
+            )
+            .await;
+            let mut sampling_config = actor.reconstruct_full_config().await;
+            sampling_config.idle_timeout_secs = Some(60);
+
+            actor
+                .handle_set_session_model(
+                    sampling_config,
+                    false,
+                    false,
+                    true,
+                    true,
+                    "Claude Fable 5.1".to_string(),
+                    85,
+                )
+                .await
+                .expect("model switch");
+
+            let agent = actor.agent.borrow();
+            assert_eq!(
+                agent.prompt_context().system_prompt_label,
+                "Claude Fable 5.1"
+            );
+            assert!(
+                agent
+                    .system_prompt()
+                    .starts_with("You are Claude Fable 5.1.")
+            );
+            drop(agent);
+            assert_eq!(actor.inference_idle_timeout.get(), Duration::from_secs(60));
+
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let system_prompt = conversation
+                .iter()
+                .find_map(|item| match item {
+                    xai_grok_sampling_types::ConversationItem::System(system) => {
+                        Some(system.content.as_ref())
+                    }
+                    _ => None,
+                })
+                .expect("system prompt");
+            assert!(system_prompt.starts_with("You are Claude Fable 5.1."));
         })
         .await;
 }
@@ -1259,7 +1315,7 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
                 header_injector: None,
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, false, true, 85)
+                .handle_set_session_model(cfg, false, false, false, true, "Model".into(), 85)
                 .await;
 
             let creds = actor.chat_state_handle.get_credentials().await;

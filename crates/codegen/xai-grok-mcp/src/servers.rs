@@ -3341,8 +3341,16 @@ impl McpClient {
     ///    Opening a browser tab / re-running DCR for a Wi-Fi blip right after wake-from-sleep is both useless and destructive.
     ///    Useless because the IdP is unreachable for the browser too; destructive because it discards a working credential.
     pub async fn force_reauth(&self, force: bool) -> bool {
+        self.force_reauth_detailed(force).await.is_ok()
+    }
+
+    /// The explicit-auth variant of [`Self::force_reauth`], preserving the reason a user-triggered flow failed.
+    pub async fn force_reauth_detailed(&self, force: bool) -> Result<(), String> {
         let (Some(auth_mgr), Some(config)) = (&self.auth_manager, &self.http_config) else {
-            return false;
+            return Err(format!(
+                "MCP server '{}' does not support OAuth authentication",
+                self.server_name
+            ));
         };
 
         let ready = {
@@ -3363,7 +3371,7 @@ impl McpClient {
                     auth_manager: auth_mgr.clone(),
                 }))
                 .await;
-                return true;
+                return Ok(());
             }
             ready
         };
@@ -3385,7 +3393,7 @@ impl McpClient {
                         auth_manager: auth_mgr.clone(),
                     }))
                     .await;
-                    return true;
+                    return Ok(());
                 }
                 Err(ref e) if !force && mcp_refresh_failure_is_transient(e) => {
                     tracing::warn!(
@@ -3393,7 +3401,7 @@ impl McpClient {
                         error = %e,
                         "Token refresh failed transiently (network); skipping browser escalation"
                     );
-                    return false;
+                    return Err(format!("Token refresh failed: {e}"));
                 }
                 Err(e) => {
                     tracing::info!(
@@ -3408,7 +3416,9 @@ impl McpClient {
                 server = self.server_name.as_str(),
                 "OAuth client not ready (hydration failed); retrying later instead of browser auth"
             );
-            return false;
+            return Err(
+                "OAuth client is not ready; retry after the server is reachable".to_string(),
+            );
         }
 
         // Full browser-based OAuth flow.
@@ -3431,7 +3441,7 @@ impl McpClient {
                     %e,
                     "Full re-authentication failed"
                 );
-                return false;
+                return Err(e);
             }
         }
 
@@ -3440,7 +3450,7 @@ impl McpClient {
             auth_manager: auth_mgr.clone(),
         }))
         .await;
-        true
+        Ok(())
     }
 
     /// Reset the transport so the next `ensure_initialized` rebuilds it with a fresh connection.

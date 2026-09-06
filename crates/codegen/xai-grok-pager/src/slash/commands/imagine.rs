@@ -1,11 +1,12 @@
 use agent_client_protocol as acp;
 use xai_grok_tools::implementations::grok_build::{
-    IMAGE_GEN_TOOL_NAME, IMAGINE_COMMAND_NAME, imagine_instruction, imagine_usage_message,
+    IMAGINE_COMMAND_NAME, imagine_instruction, imagine_usage_message,
 };
+use xai_grok_tools::implementations::{SEARCH_TOOL_NAME, USE_TOOL_NAME};
 
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 
-const REQUIRED_TOOLS: &[&str] = &[IMAGE_GEN_TOOL_NAME];
+const REQUIRED_TOOLS: &[&str] = &[SEARCH_TOOL_NAME, USE_TOOL_NAME];
 
 pub struct ImagineCommand;
 
@@ -42,8 +43,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requires_image_gen_tool() {
-        assert_eq!(ImagineCommand.required_tools(), &["image_gen"]);
+    fn requires_mcp_tool_bridge() {
+        assert_eq!(
+            ImagineCommand.required_tools(),
+            &["search_tool", "use_tool"]
+        );
     }
 
     #[test]
@@ -81,7 +85,10 @@ mod tests {
                     acp::ContentBlock::Text(t) => &t.text,
                     _ => panic!("expected Text block"),
                 };
-                assert!(text.contains("image_gen"));
+                assert!(text.contains("Codex MCP"));
+                assert!(text.contains("search_tool"));
+                assert!(text.contains("use_tool"));
+                assert!(!text.contains("Call the image_gen tool"));
                 assert!(text.contains("a golden sunset"));
             }
             other => panic!("expected InjectSkill, got {other:?}"),

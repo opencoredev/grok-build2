@@ -149,13 +149,6 @@ fn mode_specific_builtin_refusals_are_pinned() {
                  Run /fullscreen to switch this session."
                     .to_string()
             ),
-            (
-                "tutorial",
-                "/tutorial isn't available in minimal mode \
-                 (the tutorial overlay needs fullscreen). \
-                 Run /fullscreen to switch this session."
-                    .to_string()
-            ),
         ]
     );
 }

@@ -2,7 +2,7 @@ pub const ENV_SYSTEM_PROMPT_LABEL: &str = "GROK_SYSTEM_PROMPT_LABEL";
 
 pub const DEFAULT_SYSTEM_PROMPT_LABEL: &str = xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL;
 
-/// Precedence: env > config per-model > `[agent]` > GB per-model > GB global > `"Grok"`.
+/// Precedence: env > config per-model > `[agent]` > model metadata > GB global > model display name > `"Grok"`.
 /// Empty/whitespace falls through.
 ///
 /// Per-model TOML is looked up by session catalog id, then routing slug (`ModelInfo.model`).
@@ -27,6 +27,10 @@ pub(crate) fn resolve_system_prompt_label(
         cfg.remote_settings
             .as_ref()
             .and_then(|r| r.system_prompt_label.clone()),
+        model
+            .and_then(|m| model_identity_from_display_name(m.name.as_deref()))
+            .or_else(|| model.map(|m| m.model.clone()))
+            .or_else(|| Some(model_id.to_string())),
     )
 }
 
@@ -35,6 +39,7 @@ pub(crate) fn resolve_system_prompt_label_from_tiers(
     user_global: Option<String>,
     gb_per_model: Option<String>,
     gb_global: Option<String>,
+    model_identity: Option<String>,
 ) -> String {
     let non_empty = |s: Option<String>| {
         s.and_then(|v| {
@@ -49,7 +54,21 @@ pub(crate) fn resolve_system_prompt_label_from_tiers(
         .or_else(|| non_empty(user_global))
         .or_else(|| non_empty(gb_per_model))
         .or_else(|| non_empty(gb_global))
+        .or_else(|| non_empty(model_identity))
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT_LABEL.to_string())
+}
+
+fn model_identity_from_display_name(name: Option<&str>) -> Option<String> {
+    let name = name?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(
+        name.rsplit_once(" / ")
+            .map_or(name, |(_, model_name)| model_name)
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -79,7 +98,7 @@ mod system_prompt_label_tests {
     fn default_when_all_unset() {
         with_env_cleared(|| {
             assert_eq!(
-                resolve_system_prompt_label_from_tiers(None, None, None, None),
+                resolve_system_prompt_label_from_tiers(None, None, None, None, None),
                 DEFAULT_SYSTEM_PROMPT_LABEL
             );
         });
@@ -94,6 +113,7 @@ mod system_prompt_label_tests {
                     Some("Global".into()),
                     Some("GbPer".into()),
                     Some("GbGlobal".into()),
+                    Some("Model".into()),
                 ),
                 "PerModel"
             );
@@ -109,6 +129,7 @@ mod system_prompt_label_tests {
                     Some("Global".into()),
                     Some("GbPer".into()),
                     Some("GbGlobal".into()),
+                    Some("Model".into()),
                 ),
                 "Global"
             );
@@ -124,6 +145,7 @@ mod system_prompt_label_tests {
                     None,
                     Some("GbPer".into()),
                     Some("GbGlobal".into()),
+                    Some("Model".into()),
                 ),
                 "GbPer"
             );
@@ -139,6 +161,7 @@ mod system_prompt_label_tests {
                     Some("".into()),
                     None,
                     Some("GbGlobal".into()),
+                    Some("Model".into()),
                 ),
                 "GbGlobal"
             );
@@ -155,9 +178,34 @@ mod system_prompt_label_tests {
             Some("Global".into()),
             Some("GbPer".into()),
             Some("GbGlobal".into()),
+            Some("Model".into()),
         );
         unsafe { std::env::remove_var(ENV_SYSTEM_PROMPT_LABEL) };
         assert_eq!(got, "FromEnv");
+    }
+
+    #[test]
+    fn model_identity_is_the_final_dynamic_fallback() {
+        with_env_cleared(|| {
+            assert_eq!(
+                resolve_system_prompt_label_from_tiers(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("GPT 5.6 Sol".into()),
+                ),
+                "GPT 5.6 Sol"
+            );
+        });
+    }
+
+    #[test]
+    fn provider_prefix_is_removed_from_display_name() {
+        assert_eq!(
+            super::model_identity_from_display_name(Some("OpenAI / GPT 5.6 Sol")),
+            Some("GPT 5.6 Sol".into())
+        );
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

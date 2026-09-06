@@ -141,6 +141,14 @@ pub struct SessionRegistryClient {
 }
 
 impl SessionRegistryClient {
+    fn network_disabled() -> bool {
+        xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED
+    }
+
+    fn disabled_error() -> anyhow::Error {
+        anyhow::anyhow!("remote session registry is disabled in this fork")
+    }
+
     pub fn new(base_url: impl Into<String>, user_token: impl Into<String>) -> Self {
         let http_client = crate::http::shared_client();
         Self {
@@ -248,6 +256,9 @@ impl SessionRegistryClient {
 
     /// POST /v1/sessions/register (idempotent via ON CONFLICT)
     pub async fn register(&self, req: &RegisterRequest) -> Result<()> {
+        if Self::network_disabled() {
+            return Ok(());
+        }
         let url = format!("{}/sessions/register", self.base_url);
         let (response, stamp) = self
             .send_authed(self.post(&url).json(req), "session register")
@@ -260,6 +271,9 @@ impl SessionRegistryClient {
 
     /// POST /v1/sessions/{id}/replicas/update
     pub async fn update(&self, session_id: &str, req: &UpdateRequest) -> Result<()> {
+        if Self::network_disabled() {
+            return Ok(());
+        }
         let url = format!("{}/sessions/{}/replicas/update", self.base_url, session_id);
         let (response, stamp) = self
             .send_authed(self.post(&url).json(req), "session update")
@@ -272,6 +286,9 @@ impl SessionRegistryClient {
 
     /// POST /v1/sessions/{id}/replicas/finalize
     pub async fn finalize(&self, session_id: &str) -> Result<()> {
+        if Self::network_disabled() {
+            return Ok(());
+        }
         let url = format!(
             "{}/sessions/{}/replicas/finalize",
             self.base_url, session_id
@@ -287,6 +304,9 @@ impl SessionRegistryClient {
 
     /// GET /v1/sessions/search
     pub async fn search(&self, query: Option<&str>, limit: i64) -> Result<Vec<SessionRecord>> {
+        if Self::network_disabled() {
+            return Ok(Vec::new());
+        }
         let url = format!("{}/sessions/search", self.base_url);
         let mut builder = self.get(&url).query(&[("limit", limit.to_string())]);
         if let Some(q) = query {
@@ -302,6 +322,9 @@ impl SessionRegistryClient {
 
     /// GET /v1/sessions/{id}/replicas
     pub async fn get_session(&self, session_id: &str) -> Result<SessionRecord> {
+        if Self::network_disabled() {
+            return Err(Self::disabled_error());
+        }
         let url = format!("{}/sessions/{}/replicas", self.base_url, session_id);
         let (response, stamp) = self.send_authed(self.get(&url), "session get").await?;
         if !response.status().is_success() {
@@ -317,6 +340,9 @@ impl SessionRegistryClient {
         file: &str,
         turn: i32,
     ) -> Result<String> {
+        if Self::network_disabled() {
+            return Err(Self::disabled_error());
+        }
         let url = format!("{}/sessions/{}/download", self.base_url, session_id);
         let builder = self
             .get(&url)
@@ -337,6 +363,9 @@ impl SessionRegistryClient {
         turn: i32,
         dest: &std::path::Path,
     ) -> Result<()> {
+        if Self::network_disabled() {
+            return Err(Self::disabled_error());
+        }
         let url = format!("{}/sessions/{}/download", self.base_url, session_id);
         let builder = self
             .get(&url)
@@ -386,6 +415,19 @@ impl SessionRegistryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn network_policy_short_circuits_registry_requests() {
+        let client = SessionRegistryClient::new("not-a-url", "unused");
+        let request = minimal_register_request(None);
+
+        client.register(&request).await.unwrap();
+        assert!(client.search(None, 10).await.unwrap().is_empty());
+        assert_eq!(
+            client.get_session("session").await.unwrap_err().to_string(),
+            "remote session registry is disabled in this fork"
+        );
+    }
 
     // ── UpdateRequest wire shapes ────────────────────────────────────────────
     //

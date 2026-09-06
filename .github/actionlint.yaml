@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - tenki-standard-medium-4c-8g
+    - tenki-macos-15-medium

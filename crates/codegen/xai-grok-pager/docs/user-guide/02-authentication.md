@@ -218,8 +218,9 @@ credential as usable and starts the sign-in flow instead — the same one you ge
 on a machine that has never signed in, with your binary's stderr shown, so a
 device-code URL or a browser prompt reaches you. Exiting promptly on
 `GROK_AUTH_EXPIRED=1` is what makes that handover fast; a binary that blocks
-instead makes you wait out the refresh timeout on every start. Mid-session, the
-turn fails with a re-auth prompt and `/login` re-runs the binary interactively.
+instead makes you wait out the refresh timeout on every start. Mid-session, a
+401 asks you to run `/reauth` for the internal Grok flow. `/login` opens the
+separate CLIProxyAPI provider picker.
 
 One case stays ambiguous, and only in **leader mode** (`--leader`, or
 `[cli] use_leader = true`; off by default): with no credential at all, the

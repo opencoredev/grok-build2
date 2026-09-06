@@ -15,6 +15,7 @@ use xai_grok_telemetry::process_info::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "network telemetry is disabled in this fork"]
 async fn manual_auth_posts_to_events_endpoint_as_grok_shell_manual_auth() {
     let bodies: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
     let captured = bodies.clone();

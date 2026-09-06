@@ -405,11 +405,7 @@ pub(crate) mod chat_rebuild {
                     });
                 }
                 acp::ContentBlock::Image(img) => {
-                    if let Some(uri) = &img.uri {
-                        self.user_parts.push(ContentPart::Image {
-                            url: std::sync::Arc::<str>::from(uri.clone()),
-                        });
-                    }
+                    self.user_parts.push(acp_image_content_part(img));
                 }
                 _ => {} // Audio, Resource, etc. not needed for chat replay
             }
@@ -453,11 +449,20 @@ pub(crate) mod chat_rebuild {
                 .as_ref()
                 .map(|v| v.to_string())
                 .unwrap_or_default();
+            let name = tc
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("x.ai/tool"))
+                .and_then(|tool| tool.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(&tc.title)
+                .to_string();
 
             self.tool_args.insert(id.clone(), args.clone());
             self.agent_tool_calls.push(ToolCall {
                 id: std::sync::Arc::<str>::from(id),
-                name: tc.title.clone(),
+                name,
                 arguments: std::sync::Arc::<str>::from(args),
             });
 
@@ -508,8 +513,12 @@ pub(crate) mod chat_rebuild {
             let mut out = Vec::new();
             out.extend(self.flush_agent());
 
-            let content = extract_tool_result_text(fields);
-            let item = ConversationItem::tool_result(id.to_string(), content);
+            let (content, images) = extract_tool_result_content(fields);
+            let item = if images.is_empty() {
+                ConversationItem::tool_result(id.to_string(), content)
+            } else {
+                ConversationItem::tool_result_with_images(id.to_string(), content, images)
+            };
             self.item_count += 1;
             out.push(item);
             out
@@ -571,8 +580,21 @@ pub(crate) mod chat_rebuild {
         }
     }
 
-    /// Extract displayable text from a completed ToolCallUpdate.
-    fn extract_tool_result_text(fields: &acp::ToolCallUpdateFields) -> String {
+    fn acp_image_content_part(image: &acp::ImageContent) -> ContentPart {
+        let url = image
+            .uri
+            .clone()
+            .unwrap_or_else(|| format!("data:{};base64,{}", image.mime_type, image.data));
+        ContentPart::Image {
+            url: std::sync::Arc::<str>::from(url),
+        }
+    }
+
+    /// Extract displayable text and inline images from a completed ToolCallUpdate.
+    fn extract_tool_result_content(
+        fields: &acp::ToolCallUpdateFields,
+    ) -> (String, Vec<ContentPart>) {
+        let mut images = Vec::new();
         if let Some(content) = &fields.content {
             let text: String = content
                 .iter()
@@ -581,18 +603,74 @@ pub(crate) mod chat_rebuild {
                         content: acp::ContentBlock::Text(t),
                         ..
                     }) => Some(t.text.as_str()),
+                    acp::ToolCallContent::Content(acp::Content {
+                        content: acp::ContentBlock::Image(image),
+                        ..
+                    }) => {
+                        images.push(acp_image_content_part(image));
+                        None
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
                 .join("");
             if !text.is_empty() {
-                return text;
+                return (text, images);
             }
         }
         if let Some(raw) = &fields.raw_output {
-            return raw.to_string();
+            return (raw.to_string(), images);
         }
-        String::new()
+        (String::new(), images)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn data_only_user_image_becomes_data_uri() {
+            let mut reducer = ChatReducer::new();
+            reducer.on_user_chunk(&acp::ContentChunk::new(acp::ContentBlock::Image(
+                acp::ImageContent::new("AAAA", "image/png"),
+            )));
+
+            let item = reducer.flush().pop().expect("rebuilt user item");
+            assert!(matches!(
+                item,
+                ConversationItem::User(user)
+                    if matches!(
+                        &user.content[..],
+                        [ContentPart::Image { url }]
+                            if url.as_ref() == "data:image/png;base64,AAAA"
+                    )
+            ));
+        }
+
+        #[test]
+        fn completed_tool_update_rebuilds_inline_image() {
+            let mut reducer = ChatReducer::new();
+            let fields = acp::ToolCallUpdateFields::new()
+                .status(Some(acp::ToolCallStatus::Completed))
+                .content(Some(vec![acp::ToolCallContent::from(
+                    acp::ContentBlock::Image(acp::ImageContent::new("BBBB", "image/jpeg")),
+                )]));
+
+            let items = reducer.on_tool_call_update(&acp::ToolCallUpdate::new(
+                acp::ToolCallId::new("call-image"),
+                fields,
+            ));
+
+            assert!(matches!(
+                &items[..],
+                [ConversationItem::ToolResult(result)]
+                    if matches!(
+                        &result.images[..],
+                        [ContentPart::Image { url }]
+                            if url.as_ref() == "data:image/jpeg;base64,BBBB"
+                    )
+            ));
+        }
     }
 }
 

@@ -280,6 +280,7 @@ pub(crate) fn test_app() -> AppView {
         pending_screen_mode_switch: None,
         pending_effects: Vec::new(),
         pending_editor: None,
+        pending_cli_proxy_login: None,
         pending_pager_path: None,
         pending_pager_ansi: false,
         minimal_state: crate::minimal_api::MinimalState::default(),
@@ -317,7 +318,6 @@ pub(crate) fn test_app() -> AppView {
         shell_feedback_trace_offer: false,
         feedback_trace_choice_latched: false,
         feedback_trace_upload_pending: None,
-        tutorial: None,
         dashboard: None,
         dashboard_return: None,
         dashboard_persisted: None,
@@ -1644,7 +1644,7 @@ fn expected_tier_restricted_commands() -> Vec<String> {
 }
 /// Make every tier-restricted command visible on the welcome prompt.
 /// The present/absent assertions must exercise the deny list, not incidental fail-closed hiding:
-/// - `/imagine`, `/imagine-video` are `required_tools()`-gated, so advertise their tools (otherwise the registry fail-closes them).
+/// - `/imagine-video` is `required_tools()`-gated, so advertise its tool (otherwise the registry fail-closes it).
 /// - `/voice` is fail-closed hidden until the remote flag turns it on, so reveal it via the registry directly.
 ///   We drive the prompt's registry rather than `apply_voice_mode_enabled`.
 ///   The latter also flips a process-global atomic and would leak across parallel tests.
@@ -1653,7 +1653,7 @@ fn advertise_media_tools(app: &mut AppView) {
         .slash_controller
         .registry_mut()
         .set_available_tools(
-            ["image_gen", "image_to_video"]
+            ["search_tool", "use_tool", "image_to_video"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -5017,45 +5017,6 @@ fn welcome_doc_viewer_is_scroll_blocking_and_wheel_scrolls_content() {
         _ => panic!("expected DocViewer"),
     };
     assert!(scroll > 0, "wheel must advance doc scroll, got {scroll}");
-}
-#[test]
-fn tutorial_is_scroll_blocking_and_wheel_scrolls_topic() {
-    let mut app = test_app();
-    app.active_view = ActiveView::Welcome;
-    let mut tut = crate::views::tutorial::TutorialState::new();
-    let _ = crate::views::tutorial::handle_tutorial_input(
-        &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        &mut tut,
-    );
-    app.tutorial = Some(tut);
-    assert!(
-        app.is_scroll_blocking_modal_open(),
-        "tutorial overlay must block background scroll",
-    );
-    let outcome = app.handle_input(&scroll_event(MouseEventKind::ScrollDown, 40, 12));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert!(
-        app.last_scroll_pos.is_none(),
-        "wheel must not reach the background scroll path while the tutorial is open",
-    );
-    let tut = app.tutorial.as_ref().expect("tutorial stays open");
-    assert!(
-        tut.scroll > 0,
-        "wheel must advance topic scroll, got {}",
-        tut.scroll
-    );
-}
-#[test]
-fn tutorial_esc_on_list_closes_overlay() {
-    let mut app = test_app();
-    app.active_view = ActiveView::Welcome;
-    app.tutorial = Some(crate::views::tutorial::TutorialState::new());
-    let outcome = app.handle_input(&Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert!(
-        app.tutorial.is_none(),
-        "Esc on the list closes the tutorial"
-    );
 }
 #[test]
 fn dashboard_shortcuts_modal_is_scroll_blocking() {

@@ -29,6 +29,7 @@ const OAUTH_EMAIL: &str = "otel.parity.on@example.com";
 const CLIENT_VERSION: &str = "9.9.9-cv";
 
 #[test]
+#[ignore = "network telemetry is disabled in this fork"]
 fn external_stream_gates_on_end_to_end() {
     let collected = col::Collected::default();
     let endpoint = col::start_collector(collected.clone());

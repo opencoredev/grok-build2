@@ -252,7 +252,7 @@ async fn run_browser_auth_flow(
         build_authorization_url(server_name, auth_manager, byo_config, &redirect_uri).await?;
     let token_before_browser = stored_access_token(server_name, server_url).await;
 
-    open_consent_browser(server_name, &auth_url);
+    open_consent_browser(server_name, &auth_url)?;
     await_callback_or_disk_token(
         server_name,
         server_url,
@@ -418,13 +418,40 @@ async fn build_authorization_url(
         .map_err(|e| format!("Failed to get authorization URL: {e}"))
 }
 
-fn open_consent_browser(server_name: &str, auth_url: &str) {
+fn open_consent_browser(server_name: &str, auth_url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let opener = |url: &str| {
+        let status = std::process::Command::new("/usr/bin/open")
+            .arg(url)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("/usr/bin/open exited with {status}"))
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let opener = |url: &str| webbrowser::open(url).map_err(|e| e.to_string());
+
+    open_consent_browser_with(server_name, auth_url, opener)
+}
+
+fn open_consent_browser_with<E>(
+    server_name: &str,
+    auth_url: &str,
+    opener: impl FnOnce(&str) -> Result<(), E>,
+) -> Result<(), String>
+where
+    E: std::fmt::Display,
+{
     tracing::info!(server = server_name, "Opening browser for OAuth consent");
-    if let Err(e) = webbrowser::open(auth_url) {
-        // eprintln! corrupts the TUI alternate screen (in-process, fd 2).
-        // TODO: show the auth URL via ACP notification instead
-        tracing::warn!(%e, url = %auth_url, "Failed to open browser for MCP OAuth; user must visit URL manually");
-    }
+    opener(auth_url).map_err(|e| {
+        tracing::warn!(%e, "Failed to open browser for MCP OAuth");
+        format!(
+            "Could not open the browser for {server_name} authentication: {e}. Open {auth_url} manually, or fix the default browser and retry"
+        )
+    })
 }
 
 /// Peeks the file directly: `initialize_from_store` would clobber the freshly registered client with stored values and break the pending exchange.
@@ -663,6 +690,19 @@ mod tests {
         let err = parse_oauth_callback_params(&p).unwrap_err();
         assert!(err.contains("access_denied"));
         assert!(err.contains("user said no"));
+    }
+
+    #[test]
+    fn browser_launch_failure_returns_before_callback_wait() {
+        let err = open_consent_browser_with("notion", "https://auth.example.com/authorize", |_| {
+            Err("launch denied")
+        })
+        .expect_err("browser launch failure must stop the OAuth flow");
+
+        assert_eq!(
+            err,
+            "Could not open the browser for notion authentication: launch denied. Open https://auth.example.com/authorize manually, or fix the default browser and retry"
+        );
     }
 
     fn require_iss_metadata(token_endpoint: String) -> AuthorizationMetadata {

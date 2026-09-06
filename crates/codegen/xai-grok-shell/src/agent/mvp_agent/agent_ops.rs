@@ -533,6 +533,9 @@ impl MvpAgent {
     pub(super) fn build_registry_config(
         &self,
     ) -> Option<crate::session::RegistryConfig> {
+        if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+            return None;
+        }
         let remote = self
             .cfg
             .borrow()

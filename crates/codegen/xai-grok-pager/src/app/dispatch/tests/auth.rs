@@ -3,6 +3,39 @@
 use super::*;
 
 #[test]
+fn mcp_browser_launch_failure_clears_pending_and_shows_reason() {
+    use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab, ModalMessage};
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let mut modal = ExtensionsModalState::new(ExtensionsTab::McpServers);
+    modal.pending_action = Some("authenticating...".into());
+    modal.pending_entry_index = Some(3);
+    app.agents.get_mut(&id).unwrap().extensions_modal = Some(modal);
+
+    dispatch(
+        Action::TaskComplete(TaskResult::McpAuthTriggerDone {
+            agent_id: id,
+            server_name: "notion".into(),
+            result: Err(
+                "Could not open the browser for notion authentication: launch denied. Check the default browser and retry"
+                    .into(),
+            ),
+        }),
+        &mut app,
+    );
+
+    let modal = app.agents[&id].extensions_modal.as_ref().unwrap();
+    assert!(modal.pending_action.is_none());
+    assert!(modal.pending_entry_index.is_none());
+    assert!(matches!(
+        &modal.modal_message,
+        Some(ModalMessage::Error(message))
+            if message.contains("Could not open the browser") && message.contains("retry")
+    ));
+}
+
+#[test]
 fn cta_mcps_loaded_needs_auth_opens_modal_and_seeds() {
     use crate::app::agent_view::CtaPhase;
     use crate::views::extensions_modal::{ExtensionsTab, TabDataState};

@@ -32,17 +32,23 @@ impl ModelSource for OaiModelSource {
         tracing::info!("Fetching models from {}", self.endpoint.url);
         let mut request = client.get(&self.endpoint.url);
         match self.endpoint.auth {
-            EndpointAuth::ApiKey => {
+            EndpointAuth::OpenAiCompatible => {
+                let api_key = crate::agent::auth_method::read_openai_compatible_api_key_env()
+                    .map_err(|_| {
+                        BackendError::Auth(
+                            "No API key for custom models endpoint. Set OPENAI_API_KEY or XAI_API_KEY."
+                                .into(),
+                        )
+                    })?;
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+            EndpointAuth::XaiApiKey => {
                 let api_key = crate::agent::auth_method::read_xai_api_key_env()
                     .or_else(|_| {
                         auth.map(|a| a.key.clone())
                             .ok_or(std::env::VarError::NotPresent)
                     })
-                    .map_err(|_| {
-                        BackendError::Auth(
-                            "No API key for custom models endpoint. Set XAI_API_KEY.".into(),
-                        )
-                    })?;
+                    .map_err(|_| BackendError::Auth("No xAI API key available.".into()))?;
                 request = request.header("Authorization", format!("Bearer {}", api_key));
             }
             EndpointAuth::Session => {
@@ -100,7 +106,8 @@ impl ModelSource for OaiModelSource {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndpointAuth {
-    ApiKey,
+    OpenAiCompatible,
+    XaiApiKey,
     Session,
 }
 struct ListModelsEndpoint {
@@ -112,12 +119,12 @@ impl ListModelsEndpoint {
         if endpoints.has_custom_endpoint() {
             Self {
                 url: endpoints.resolve_models_list_url(),
-                auth: EndpointAuth::ApiKey,
+                auth: EndpointAuth::OpenAiCompatible,
             }
         } else if fetch_auth == ModelFetchAuth::ApiKey {
             Self {
                 url: format!("{}/models", endpoints.xai_api_base_url),
-                auth: EndpointAuth::ApiKey,
+                auth: EndpointAuth::XaiApiKey,
             }
         } else {
             Self {
@@ -157,7 +164,7 @@ mod tests {
         assert_eq!(deployment.auth, EndpointAuth::Session);
         let api = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::ApiKey);
         assert_eq!(api.url, "https://inference.acme-corp.example/xai/v1/models");
-        assert_eq!(api.auth, EndpointAuth::ApiKey);
+        assert_eq!(api.auth, EndpointAuth::XaiApiKey);
         let default = EndpointsConfig::from_config_value(&toml::Value::Table(Default::default()));
         assert_eq!(
             ListModelsEndpoint::from_endpoints(&default, ModelFetchAuth::ApiKey).url,
@@ -172,6 +179,37 @@ mod tests {
         );
         let ep = ListModelsEndpoint::from_endpoints(&custom, ModelFetchAuth::Session);
         assert_eq!(ep.url, "https://models.acme.com/v1/models");
-        assert_eq!(ep.auth, EndpointAuth::ApiKey);
+        assert_eq!(ep.auth, EndpointAuth::OpenAiCompatible);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn custom_endpoint_key_prefers_openai_then_xai() {
+        use crate::agent::auth_method::{
+            LEGACY_XAI_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR,
+            read_openai_compatible_api_key_env,
+        };
+
+        for key in [
+            OPENAI_API_KEY_ENV_VAR,
+            XAI_API_KEY_ENV_VAR,
+            LEGACY_XAI_API_KEY_ENV_VAR,
+        ] {
+            unsafe { std::env::remove_var(key) };
+        }
+        unsafe {
+            std::env::set_var(XAI_API_KEY_ENV_VAR, "xai-fallback");
+            std::env::set_var(OPENAI_API_KEY_ENV_VAR, "openai-primary");
+        }
+        assert_eq!(
+            read_openai_compatible_api_key_env().unwrap(),
+            "openai-primary"
+        );
+        unsafe { std::env::remove_var(OPENAI_API_KEY_ENV_VAR) };
+        assert_eq!(
+            read_openai_compatible_api_key_env().unwrap(),
+            "xai-fallback"
+        );
+        unsafe { std::env::remove_var(XAI_API_KEY_ENV_VAR) };
     }
 }

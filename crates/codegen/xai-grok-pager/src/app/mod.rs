@@ -16,6 +16,7 @@ pub mod app_view;
 pub mod bundle;
 pub(crate) mod cancel_latency;
 pub mod cli;
+pub(crate) mod cli_proxy_login;
 pub mod consent;
 pub use crate::link_opener;
 use xai_grok_telemetry::region;

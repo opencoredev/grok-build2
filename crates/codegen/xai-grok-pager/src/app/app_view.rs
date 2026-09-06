@@ -543,12 +543,10 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
 ///
 /// Current set:
 /// - `usage`: coding credit / billing UI (alias: `/cost`)
-/// - `imagine`: image generation entry point
 /// - `imagine-video`: video generation entry point
 /// - `voice`: voice dictation entry point.
 ///   The Ctrl+Space / F8 keybinding is gated separately in [`crate::app::dispatch::voice`], since it bypasses the slash registry.
-pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] =
-    &["usage", "imagine", "imagine-video", "voice"];
+pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] = &["usage", "imagine-video", "voice"];
 /// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
 /// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
 /// Everything else (paid tiers and unknown future names) is unrestricted (fail-open).
@@ -801,6 +799,8 @@ pub struct AppView {
     /// Typed `$EDITOR` work consumed by the event loop after the current cycle.
     /// Both configuration-file and prompt-draft edits share the existing leave-raw-mode / child / restore handoff.
     pub(crate) pending_editor: Option<crate::app::external_editor::PendingEditorRequest>,
+    /// CLIProxyAPI provider login that needs direct terminal ownership.
+    pub(crate) pending_cli_proxy_login: Option<crate::app::cli_proxy_login::PendingCliProxyLogin>,
     /// Path to open in `$PAGER` (default `less`) after the current event cycle.
     /// Set by `Action::OpenTranscriptPager` (`/transcript`).
     /// Consumed by the event loop, which suspends the inline TUI, spawns the pager, then restores and deletes the temp file.
@@ -1164,10 +1164,6 @@ pub struct AppView {
     pub(crate) screen_mode: super::ScreenMode,
     /// Pending in-process mode-switch target, consumed by the event loop.
     pub(crate) pending_screen_mode_switch: Option<super::ScreenMode>,
-    /// Onboarding tutorial overlay, if open.
-    /// Top-level (not per-agent) so it works over both the welcome screen and an agent session.
-    /// Opened by `/tutorial` (also in the command palette).
-    pub tutorial: Option<crate::views::tutorial::TutorialState>,
     /// Agent Dashboard state.
     /// `Some(_)` only when the dashboard view is active (`active_view == AgentDashboard`) or recently closed.
     /// Held outside the `ActiveView` discriminant because `DashboardState` is not `Copy` (owns its prompt widget, peek panel, etc.).
@@ -1474,6 +1470,7 @@ impl AppView {
             welcome_tip_typing_dismissed: false,
             pending_effects: Vec::new(),
             pending_editor: None,
+            pending_cli_proxy_login: None,
             pending_pager_path: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),
@@ -1658,7 +1655,6 @@ impl AppView {
             shell_feedback_trace_offer: false,
             feedback_trace_choice_latched: false,
             feedback_trace_upload_pending: None,
-            tutorial: None,
             dashboard: None,
             dashboard_return: None,
             dashboard_persisted: None,
@@ -2481,17 +2477,6 @@ impl AppView {
                     | MouseEventKind::Moved
             );
             if is_mouse_action {}
-        }
-        if let Some(tutorial) = self.tutorial.as_mut()
-            && matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
-        {
-            match crate::views::tutorial::handle_tutorial_input(ev, tutorial) {
-                crate::views::tutorial::TutorialOutcome::Closed => {
-                    self.tutorial = None;
-                }
-                crate::views::tutorial::TutorialOutcome::Consumed => {}
-            }
-            return InputOutcome::Changed;
         }
         let zdr_blocked = self.is_zdr_blocked();
         let has_access = self.has_access();
@@ -4708,14 +4693,6 @@ impl AppView {
                                 },
                             );
                         }
-                        if let Some(tutorial) = self.tutorial.as_mut() {
-                            crate::views::tutorial::render_tutorial(
-                                f.buffer_mut(),
-                                view_area,
-                                tutorial,
-                                compact,
-                            );
-                        }
                         if let Some(fps) = &fps_overlay {
                             fps.render(full_area, f.buffer_mut());
                         }
@@ -4723,7 +4700,7 @@ impl AppView {
                             panel.render(full_area, f.buffer_mut());
                         }
                         let has_cloud_modal = false;
-                        let cursor = if has_cloud_modal || self.tutorial.is_some() {
+                        let cursor = if has_cloud_modal {
                             None
                         } else {
                             result.cursor_pos
@@ -4887,14 +4864,6 @@ impl AppView {
                                     compact,
                                 );
                             }
-                            if let Some(tutorial) = self.tutorial.as_mut() {
-                                crate::views::tutorial::render_tutorial(
-                                    f.buffer_mut(),
-                                    view_area,
-                                    tutorial,
-                                    compact,
-                                );
-                            }
                             if let Some(fps) = &fps_overlay {
                                 fps.render(full_area, f.buffer_mut());
                             }
@@ -4903,17 +4872,10 @@ impl AppView {
                             }
                             let (cursor_pos, post_flush) = result;
                             let has_cloud = false;
-                            if has_cloud
-                                || self.import_claude_modal.is_some()
-                                || self.tutorial.is_some()
-                            {
+                            if has_cloud || self.import_claude_modal.is_some() {
                                 link_spans.clear();
                             }
-                            let cursor = if has_cloud || self.tutorial.is_some() {
-                                None
-                            } else {
-                                cursor_pos
-                            };
+                            let cursor = if has_cloud { None } else { cursor_pos };
                             return (cursor, Self::merge_escapes(notif_escapes, post_flush));
                         }
                     }
@@ -5011,24 +4973,13 @@ impl AppView {
                                 Self::dashboard_stale_image_clears(agents, drawn_popup_agent);
                             let popup_post_flush =
                                 Self::merge_post_flush(stale_clears, popup_post_flush);
-                            let tutorial_open = self.tutorial.is_some();
-                            if let Some(tutorial) = self.tutorial.as_mut() {
-                                crate::views::tutorial::render_tutorial(
-                                    f.buffer_mut(),
-                                    view_area,
-                                    tutorial,
-                                    compact,
-                                );
-                            }
                             if let Some(fps) = &fps_overlay {
                                 fps.render(full_area, f.buffer_mut());
                             }
                             if let Some(panel) = &scroll_debug_panel {
                                 panel.render(full_area, f.buffer_mut());
                             }
-                            let cursor = if tutorial_open {
-                                None
-                            } else if dashboard.attached_agent.is_some() {
+                            let cursor = if dashboard.attached_agent.is_some() {
                                 popup_cursor
                             } else {
                                 dash_cursor
@@ -5175,7 +5126,6 @@ impl AppView {
             || self.import_claude_modal.is_some()
             || self.new_worktree_dialog.is_some()
             || self.welcome_doc_viewer.is_some()
-            || self.tutorial.is_some()
             || matches!(self.active_view, ActiveView::AgentDashboard
                 if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some()))
             || cloud_modal_open

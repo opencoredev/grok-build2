@@ -313,20 +313,24 @@ async fn run(
     } else {
         tracing::info!("kernel OOM-kill protection not active");
     }
-    let direct_otlp = match std::env::var("GROK_WORKSPACE_OTLP_ENDPOINT") {
-        Ok(endpoint) if !endpoint.is_empty() => {
-            match xai_tracing::init_fastrace(endpoint.clone(), SERVICE_NAME.to_owned(), None) {
-                Ok(()) => {
-                    tracing::info!(%endpoint, "trace export enabled (direct OTLP)");
-                    true
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "direct OTLP trace export init failed");
-                    false
+    let direct_otlp = if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+        false
+    } else {
+        match std::env::var("GROK_WORKSPACE_OTLP_ENDPOINT") {
+            Ok(endpoint) if !endpoint.is_empty() => {
+                match xai_tracing::init_fastrace(endpoint.clone(), SERVICE_NAME.to_owned(), None) {
+                    Ok(()) => {
+                        tracing::info!(%endpoint, "trace export enabled (direct OTLP)");
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "direct OTLP trace export init failed");
+                        false
+                    }
                 }
             }
+            _ => false,
         }
-        _ => false,
     };
     let url = Url::parse(&args.hub_url).map_err(|e| anyhow::anyhow!("invalid --hub-url: {e}"))?;
     {
@@ -478,7 +482,7 @@ async fn run(
         ));
     }
     let mut donation_pump = None;
-    if !direct_otlp {
+    if !xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED && !direct_otlp {
         match ws_handle.trace_donation_reporter(SERVICE_NAME).await {
             Some((reporter, pump)) => {
                 fastrace::set_reporter(reporter, fastrace::collector::Config::default());
@@ -489,21 +493,25 @@ async fn run(
         }
     }
     let mut log_donation_pump = None;
-    match ws_handle.log_donation_layer(SERVICE_NAME).await {
-        Some((sender, pump)) => {
-            donating.activate(sender);
-            log_donation_pump = Some(pump);
-            tracing::info!("log export enabled");
+    if !xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+        match ws_handle.log_donation_layer(SERVICE_NAME).await {
+            Some((sender, pump)) => {
+                donating.activate(sender);
+                log_donation_pump = Some(pump);
+                tracing::info!("log export enabled");
+            }
+            None => tracing::info!("log export disabled (not connected)"),
         }
-        None => tracing::info!("log export disabled (not connected)"),
     }
     let mut metric_donation_pump = None;
-    match ws_handle.metric_donation_reporter(SERVICE_NAME).await {
-        Some(pump) => {
-            metric_donation_pump = Some(pump);
-            tracing::info!("metric export enabled");
+    if !xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+        match ws_handle.metric_donation_reporter(SERVICE_NAME).await {
+            Some(pump) => {
+                metric_donation_pump = Some(pump);
+                tracing::info!("metric export enabled");
+            }
+            None => tracing::info!("metric export disabled (not connected)"),
         }
-        None => tracing::info!("metric export disabled (not connected)"),
     }
     if metric_donation_pump.is_some()
         && let Some((tx, control_port)) = &preview_shutdown

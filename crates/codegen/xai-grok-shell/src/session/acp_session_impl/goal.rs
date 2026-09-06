@@ -2,6 +2,8 @@
 
 use super::*;
 
+const MAX_CONSECUTIVE_GOAL_EVALUATOR_FAILURES: u32 = 3;
+
 /// Minimum toolset a role needs, checked by the parent-side gate.
 /// A configured harness `agent_type` whose role toolset lacks the capability fails open to the current model and session harness.
 /// Failing open beats spawning an unusable verifier.
@@ -1338,18 +1340,62 @@ impl SessionActor {
             Ok(verdict) => verdict,
             Err(error) => {
                 self.record_goal_round_progress(&error, true);
-                self.auto_pause_goal_if_active_with_message(
-                    crate::session::goal_tracker::GoalPauseReason::Infra,
-                    format!(
-                        "Goal evaluation failed after a bounded retry: {error}. \
-                         The goal was paused rather than treated as complete. \
-                         Use /goal resume to retry."
-                    ),
-                )
-                .await;
-                return GoalRoundDecision::EndTurn;
+                let failure_streak = {
+                    let mut tracker = self.goal_tracker.lock();
+                    tracker.reset_evaluator_blocker();
+                    let streak = tracker.record_evaluator_failure();
+                    self.goal_notify_sender().persist_goal_state(&tracker);
+                    streak
+                };
+                if failure_streak >= MAX_CONSECUTIVE_GOAL_EVALUATOR_FAILURES {
+                    let message = format!(
+                        "Goal evaluation failed {failure_streak} consecutive times: {error}. \
+                         The goal paused to prevent an endless retry loop."
+                    );
+                    self.auto_pause_goal_if_active_with_message(
+                        crate::session::goal_tracker::GoalPauseReason::Infra,
+                        message.clone(),
+                    )
+                    .await;
+                    self.send_slash_command_output(&format!(
+                        "Goal paused after {failure_streak} evaluator failures.\nReason: {error}\n\n\
+                         Type /goal resume to retry."
+                    ))
+                    .await;
+                    return GoalRoundDecision::EndTurn;
+                }
+                tracing::warn!(
+                    session_id = %self.session_info.id.0,
+                    error = %error,
+                    failure_streak,
+                    "goal evaluator unavailable after bounded retry; continuing active goal"
+                );
+                let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
+                if self.enforce_goal_token_budget(current_tokens).await {
+                    return GoalRoundDecision::EndTurn;
+                }
+                let Some(mut plan) = self.prepare_goal_continuation(current_tokens).await else {
+                    return GoalRoundDecision::EndTurn;
+                };
+                plan.directive.push_str(
+                    "\nThe goal evaluator was unavailable after a bounded retry. Continue the \
+                     implementation from the plan and todo list. Do not stop because of this \
+                     evaluator error.\n",
+                );
+                if let Some(rec) = plan.strategy_rec.as_deref() {
+                    self.consume_strategist_note(rec);
+                }
+                if let Some(pattern) = plan.stop_pattern {
+                    self.record_and_emit_premature_stop(pattern);
+                }
+                return GoalRoundDecision::Continue(plan.directive);
             }
         };
+        {
+            let mut tracker = self.goal_tracker.lock();
+            tracker.reset_evaluator_failure();
+            self.goal_notify_sender().persist_goal_state(&tracker);
+        }
         let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
         if self.enforce_goal_token_budget(current_tokens).await {
             return GoalRoundDecision::EndTurn;

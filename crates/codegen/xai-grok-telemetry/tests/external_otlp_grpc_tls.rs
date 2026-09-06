@@ -10,6 +10,7 @@ mod otlp_collector;
 use otlp_collector as col;
 
 #[test]
+#[ignore = "network telemetry is disabled in this fork"]
 fn external_stream_grpc_over_tls_end_to_end() {
     let tls = col::generate_tls_material();
     let ca_file = tempfile::NamedTempFile::new().expect("CA temp file");

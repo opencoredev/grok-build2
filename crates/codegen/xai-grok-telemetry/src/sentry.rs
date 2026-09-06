@@ -32,7 +32,7 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 pub fn init(config: Config) -> ClientInitGuard {
     let config = CONFIG.get_or_init(|| config);
 
-    if config.disabled {
+    if crate::NETWORK_TELEMETRY_DISABLED || config.disabled {
         return sentry::init(ClientOptions::default());
     }
 

@@ -264,7 +264,7 @@ impl crate::types::tool_metadata::ToolMetadata for ImageEditTool {
     }
 
     fn description_template(&self) -> &str {
-        r##"Edit or transform existing image(s) via the xAI Imagine API; use instead of image_gen for image-to-image work (preserve likeness, transfer style, remix). Returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. Each required `image` is one reference — a user-attachment token (e.g. "[Image #1]"), an absolute filesystem path, or a `data:image/...;base64,...` URL (see the `image` parameter for the resolution order and details)."##
+        r##"Edit or transform existing image(s) via the xAI Imagine API. Use it for image-to-image work such as preserving likeness, transferring style, or remixing. For text-only generation, use `/imagine`, which routes through the Codex MCP. Returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. Each required `image` is one reference — a user-attachment token (e.g. "[Image #1]"), an absolute filesystem path, or a `data:image/...;base64,...` URL (see the `image` parameter for the resolution order and details)."##
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
@@ -314,7 +314,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         if input.image.is_empty() {
             return Err(xai_tool_runtime::ToolError::invalid_arguments(
                 "image_edit requires at least one reference image. \
-                 Use image_gen for text-only generation.",
+                 Use /imagine for text-only generation through the Codex MCP.",
             ));
         }
 
@@ -493,6 +493,8 @@ mod tests {
         .await;
         let err = result.unwrap_err().to_string();
         assert!(err.contains("at least one reference image"), "got: {err}");
+        assert!(err.contains("/imagine"), "got: {err}");
+        assert!(!err.contains("image_gen"), "got: {err}");
     }
 
     #[tokio::test]

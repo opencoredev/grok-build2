@@ -53,7 +53,6 @@ pub mod tasks_pane;
 pub mod timeline;
 pub mod todo_pane;
 pub mod turn_status;
-pub mod tutorial;
 pub mod usage_modal;
 pub mod welcome;
 pub mod workflows;

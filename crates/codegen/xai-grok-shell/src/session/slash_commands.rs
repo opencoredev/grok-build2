@@ -332,7 +332,9 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     BuiltinCommand {
         name: "goal",
         description: "Set, manage, or check an autonomous goal",
-        argument_hint: Some("<objective> [--budget <tokens>] | status | pause | resume | clear"),
+        argument_hint: Some(
+            "<objective> [--budget <tokens>] | status | pause | resume | complete | clear",
+        ),
         aliases: &[],
         model_authored_eligibility: ModelAuthoredEligibility::Denied,
         gate: BuiltinGate::Goal,
@@ -343,6 +345,7 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
                 "" | "status" => BuiltinAction::GoalStatus,
                 "pause" => BuiltinAction::GoalPause,
                 "resume" => BuiltinAction::GoalResume,
+                "complete" => BuiltinAction::GoalComplete,
                 "clear" => BuiltinAction::GoalClear,
                 _ => {
                     let (objective, token_budget) = parse_goal_budget(trimmed);
@@ -1282,6 +1285,7 @@ pub(super) enum BuiltinAction {
     GoalStatus,
     GoalPause,
     GoalResume,
+    GoalComplete,
     GoalClear,
     DeepResearch {
         query: String,
@@ -1324,6 +1328,7 @@ impl BuiltinAction {
             | BuiltinAction::GoalStatus
             | BuiltinAction::GoalPause
             | BuiltinAction::GoalResume
+            | BuiltinAction::GoalComplete
             | BuiltinAction::GoalClear => "goal",
             BuiltinAction::DeepResearch { .. } => "deep-research",
             BuiltinAction::WorkflowManage { .. } => "workflow",
@@ -1358,6 +1363,7 @@ impl BuiltinAction {
             BuiltinAction::GoalStatus
             | BuiltinAction::GoalPause
             | BuiltinAction::GoalResume
+            | BuiltinAction::GoalComplete
             | BuiltinAction::GoalClear => false,
             BuiltinAction::DeepResearch { .. } => true,
             BuiltinAction::WorkflowManage { .. } => true,
@@ -1377,9 +1383,11 @@ pub(crate) enum SkillSlashRewrite {
     RewriteToRun,
     Passthrough,
 }
-/// Scan user input left-to-right for `/{word}` tokens where `word` matches a **known registered skill name** (bare or qualified).
+/// Scan user input left-to-right for `/{word}` or `${word}` tokens where `word`
+/// matches a **known registered skill name** (bare or qualified).
 ///
-/// Unknown `/words` (like `/api/v2/users`, `/tmp/file`) are NOT treated as skill references; only tokens that resolve to a known skill count.
+/// Unknown tokens such as `/api/v2/users` and `$HOME` are not treated as skill references.
+/// Only tokens that resolve to a known skill count.
 ///
 /// Returns `None` when no known skill references are found.
 /// Otherwise returns the list of `ParsedSkillRef` entries with each skill's args (the text between one skill token and the next, or end-of-input).
@@ -1408,7 +1416,7 @@ fn parse_skill_references_with_catalog(
     let bytes = trimmed.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != b'/' {
+        if bytes[i] != b'/' && bytes[i] != b'$' {
             i += 1;
             continue;
         }
@@ -1579,6 +1587,25 @@ pub(super) fn resolve_human_intent(
     workflows: &[crate::session::workflow::registry::WorkflowListing],
     loop_fire_mode: LoopFireMode,
 ) -> Result<Vec<acp::ContentBlock>, SlashCommandOutcome> {
+    let full_text = prompt_blocks
+        .iter()
+        .find_map(|b| {
+            if let acp::ContentBlock::Text(t) = b {
+                Some(t.text.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("");
+    if full_text.trim_start().starts_with('$') {
+        let catalog = EffectiveCommandCatalog::build(skills, availability, workflows);
+        if let Some(parsed_skills) = parse_skill_references_with_catalog(full_text, &catalog) {
+            return Err(SlashCommandOutcome::InvokeSkill {
+                blocks: prompt_blocks,
+                skills: parsed_skills,
+            });
+        }
+    }
     let crate::session::slash_authority::AuthorityResolution::HumanIntent { command_name, args } =
         crate::session::slash_authority::resolve(
             crate::session::InputAuthority::HumanIntent,
@@ -1631,16 +1658,6 @@ pub(super) fn resolve_human_intent(
         }
         return Err(SlashCommandOutcome::Builtin(action));
     }
-    let full_text = prompt_blocks
-        .iter()
-        .find_map(|b| {
-            if let acp::ContentBlock::Text(t) = b {
-                Some(t.text.as_str())
-            } else {
-                None
-            }
-        })
-        .unwrap_or("");
     if let Some(parsed_skills) = parse_skill_references_with_catalog(full_text, &catalog) {
         return Err(SlashCommandOutcome::InvokeSkill {
             blocks: prompt_blocks,

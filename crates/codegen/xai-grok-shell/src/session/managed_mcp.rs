@@ -5,6 +5,7 @@
 //! Later `insert()` beats earlier `or_insert()`:
 //!   - config.toml    — seeds the map; `enabled = false` blocks lower layers
 //!   - Plugins        — `or_insert` (won't override config.toml)
+//!   - ~/.codex/config.toml — `or_insert` (Codex MCP records only)
 //!   - ~/.claude.json — `or_insert` (imported user/local MCP servers)
 //!   - `.mcp.json`    — `or_insert` (team baseline)
 //!   - Client         — `insert` (wins except servers rejected by a disabled
@@ -94,23 +95,50 @@ pub(crate) fn admit_client_mcp_servers(
     cwd: &std::path::Path,
     compat: &xai_grok_tools::types::compat::CompatConfig,
 ) -> Vec<acp::McpServer> {
-    let mut blocked: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if !compat.cursor.mcps {
+    let cursor_servers = if !compat.cursor.mcps {
         let mut forced = *compat;
         forced.cursor.mcps = true;
-        blocked.extend(
-            crate::util::config::load_cursor_mcp_servers(cwd, &forced)
-                .iter()
-                .map(mcp_vendor_block_key),
-        );
+        crate::util::config::load_cursor_mcp_servers(cwd, &forced)
+    } else {
+        Vec::new()
+    };
+    let claude_servers = if !compat.claude.mcps {
+        crate::util::config::load_claude_json_mcp_servers_for_attribution(cwd)
+    } else {
+        Vec::new()
+    };
+    let codex_servers = if !compat.codex.mcps {
+        let mut forced = *compat;
+        forced.codex.mcps = true;
+        crate::util::config::load_codex_mcp_servers(&forced)
+    } else {
+        Vec::new()
+    };
+    admit_client_mcp_servers_with_sources(
+        client_mcp_servers,
+        compat,
+        &cursor_servers,
+        &claude_servers,
+        &codex_servers,
+    )
+}
+
+fn admit_client_mcp_servers_with_sources(
+    client_mcp_servers: Vec<acp::McpServer>,
+    compat: &xai_grok_tools::types::compat::CompatConfig,
+    cursor_servers: &[acp::McpServer],
+    claude_servers: &[acp::McpServer],
+    codex_servers: &[acp::McpServer],
+) -> Vec<acp::McpServer> {
+    let mut blocked: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !compat.cursor.mcps {
+        blocked.extend(cursor_servers.iter().map(mcp_vendor_block_key));
     }
     if !compat.claude.mcps {
-        // Attribution must see disk even when import-marker / runtime gates empty the normal Claude loader
-        blocked.extend(
-            crate::util::config::load_claude_json_mcp_servers_for_attribution(cwd)
-                .iter()
-                .map(mcp_vendor_block_key),
-        );
+        blocked.extend(claude_servers.iter().map(mcp_vendor_block_key));
+    }
+    if !compat.codex.mcps {
+        blocked.extend(codex_servers.iter().map(mcp_vendor_block_key));
     }
     if blocked.is_empty() {
         return client_mcp_servers;
@@ -265,7 +293,7 @@ pub(crate) fn merge_managed_mcp_servers_sourced(
     servers.into_values().collect()
 }
 
-/// Plugin / Claude / Cursor / `.mcp.json` servers in merge priority order.
+/// Plugin / Codex / Claude / Cursor / `.mcp.json` servers in merge priority order.
 ///
 /// Callers insert with `entry(name).or_insert` so the first listed source wins a shared name.
 /// TOML is applied separately (last-wins for merge and for discovery force-enable).
@@ -320,6 +348,18 @@ fn non_toml_mcp_servers_with_source(
                 out.push((server, source.clone()));
             }
         }
+    }
+
+    let codex_config_source = ConfigSource::CodexConfig {
+        path: xai_dirs::home_dir()
+            .map(|h| h.join(".codex").join("config.toml"))
+            .unwrap_or_default(),
+    };
+    for server in crate::util::config::load_codex_mcp_servers(compat) {
+        if toml_claimed_names.contains(mcp_server_name(&server)) {
+            continue;
+        }
+        out.push((server, codex_config_source.clone()));
     }
 
     let claude_json_source = ConfigSource::ClaudeJson {
@@ -587,6 +627,24 @@ mod tests {
                 .iter()
                 .any(|s| mcp_server_name(s) == "killswitch-cache"),
             "client-forwarded cursor server must remain when cursor.mcps is on"
+        );
+    }
+
+    #[test]
+    fn client_codex_server_dropped_when_codex_mcps_disabled() {
+        let mut compat = xai_grok_tools::types::compat::CompatConfig::default();
+        compat.codex.mcps = false;
+        let name = "codex-killswitch";
+        let merged = admit_client_mcp_servers_with_sources(
+            vec![client_stdio(name)],
+            &compat,
+            &[],
+            &[],
+            &[client_stdio(name)],
+        );
+        assert!(
+            merged.is_empty(),
+            "client-forwarded Codex server must be dropped when codex.mcps is off"
         );
     }
 

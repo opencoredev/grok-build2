@@ -749,7 +749,7 @@ fn remote_compat_value(
         CompatRemoteKey::CodexSessions => remote.codex_sessions_enabled,
     }
 }
-fn resolve_compat_config(
+pub(crate) fn resolve_compat_config(
     config: &CompatConfigToml,
     remote: Option<&crate::util::config::RemoteSettings>,
 ) -> CompatConfig {
@@ -2382,6 +2382,9 @@ impl Config {
         self.is_feature_enabled(Feature::TwoPassCompaction)
     }
     pub(crate) fn resolve_telemetry_mode(&self) -> Resolved<TelemetryMode> {
+        if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+            return Resolved::new(TelemetryMode::Disabled, ConfigSource::Default);
+        }
         if let Some(mode) = self.requirements.telemetry.pinned() {
             return Resolved::new(mode, ConfigSource::Requirement);
         }
@@ -2404,6 +2407,9 @@ impl Config {
         Resolved::new(TelemetryMode::Disabled, ConfigSource::Default)
     }
     pub(crate) fn resolve_trace_upload(&self) -> Resolved<bool> {
+        if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+            return Resolved::new(false, ConfigSource::Default);
+        }
         let mode = self.resolve_telemetry_mode();
         let ff = if mode.value.is_disabled() {
             None
@@ -3156,14 +3162,20 @@ impl SyncBoolFlag {
 /// Sync slice of [`Config::resolve_telemetry_mode`] for use before the tokio runtime (e.g. `init_sentry`).
 /// `true` only when explicitly off.
 pub(crate) fn is_telemetry_disabled_sync() -> bool {
+    if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+        return true;
+    }
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
         .disable_env("DISABLE_TELEMETRY")
         .enable_env(grok_telemetry_env_enabled)
         .resolve()
 }
-/// Like [`is_telemetry_disabled_sync`] but only `true` when telemetry is *explicitly* off.
-/// Absence is not disabled (`.default(true)`), so remote-only enablement still builds the OTLP exporter (the runtime gate then governs it).
+/// Like [`is_telemetry_disabled_sync`] but only `true` when upstream telemetry
+/// is explicitly off. This fork's compile-time policy always returns `true`.
 pub(crate) fn is_telemetry_explicitly_disabled_sync() -> bool {
+    if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+        return true;
+    }
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
         .disable_env("DISABLE_TELEMETRY")
         .enable_env(grok_telemetry_env_enabled)
@@ -3173,6 +3185,9 @@ pub(crate) fn is_telemetry_explicitly_disabled_sync() -> bool {
 /// Sync sibling of [`is_telemetry_disabled_sync`] scoped to Sentry.
 /// Inherits from telemetry when no Sentry-specific signal is set.
 pub fn is_error_reporting_disabled_sync() -> bool {
+    if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+        return true;
+    }
     !SyncBoolFlag::new(error_reporting_enabled_from_toml)
         .disable_env("DISABLE_ERROR_REPORTING")
         .enable_env(|| env_bool("GROK_ERROR_REPORTING"))
@@ -3406,6 +3421,20 @@ fn managed_settings_env_flag(key: &str) -> Option<bool> {
 }
 /// Assemble the final model map. Priority (highest wins):
 /// config.toml `[model.*]` > prefetched (remote) > hardcoded defaults.
+pub(crate) fn apply_custom_endpoint_env_keys(
+    endpoints: &EndpointsConfig,
+    models: &mut IndexMap<String, ModelEntry>,
+) {
+    if !endpoints.has_custom_endpoint() {
+        return;
+    }
+    for model in models.values_mut() {
+        model
+            .env_key
+            .get_or_insert_with(|| EnvKeys::new(["OPENAI_API_KEY", "XAI_API_KEY"]));
+    }
+}
+
 pub(crate) fn resolve_model_list(
     cfg: &Config,
     prefetched: Option<IndexMap<String, ModelEntry>>,
@@ -3501,6 +3530,7 @@ pub(crate) fn resolve_model_list(
         );
         resolved.insert(key.clone(), entry);
     }
+    apply_custom_endpoint_env_keys(&cfg.endpoints, &mut resolved);
     for (key, entry) in resolved.iter_mut() {
         if let Some(ref mut provider) = entry.auth_provider {
             if provider.is_fail_closed() {
@@ -3943,6 +3973,7 @@ pub struct ConfigModelOverride {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub supports_reasoning_effort: Option<bool>,
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
+    pub variants: Vec<ModelVariant>,
     pub supports_backend_search: Option<bool>,
     /// Aliases must be registered in `config_model_override_parse::ALIASES`; serde rejects a table that contains both spellings otherwise.
     #[serde(alias = "send_compactions_remaining")]
@@ -4034,6 +4065,9 @@ impl ConfigModelOverride {
         }
         if !self.reasoning_efforts.is_empty() {
             entry.info.reasoning_efforts = self.reasoning_efforts.clone();
+        }
+        if !self.variants.is_empty() {
+            entry.info.variants = self.variants.clone();
         }
         if let Some(v) = self.supports_backend_search {
             entry.info.supports_backend_search = v;
@@ -4304,7 +4338,9 @@ impl ModelEntry {
         Self {
             info,
             api_key: None,
-            env_key: None,
+            env_key: endpoints
+                .has_custom_endpoint()
+                .then(|| EnvKeys::new(["OPENAI_API_KEY", "XAI_API_KEY"])),
             auth_provider: None,
             api_base_url: None,
         }
@@ -5125,7 +5161,7 @@ pub(crate) fn sampling_config_for_model(
         force_http1: false,
         max_retries: info.max_retries,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
-        idle_timeout_secs: None,
+        idle_timeout_secs: info.inference_idle_timeout_secs,
         client_identifier: None,
         deployment_id,
         user_id,

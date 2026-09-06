@@ -809,7 +809,7 @@ pub(crate) struct SessionActor {
     /// Telemetry counters for session summary.
     pub(crate) session_start: std::time::Instant,
     /// Per-chunk idle timeout for inference streaming; a stall aborts the stream.
-    pub(crate) inference_idle_timeout: Duration,
+    pub(crate) inference_idle_timeout: std::cell::Cell<Duration>,
     pub(crate) max_retries: u32,
     /// Fixed bounds on a subagent turn's 429 waiting.
     pub(crate) rate_limit_waits: RateLimitWaitConfig,

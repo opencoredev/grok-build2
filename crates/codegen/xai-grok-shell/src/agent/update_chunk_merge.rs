@@ -602,6 +602,41 @@ mod tests {
     }
 
     #[test]
+    fn disabled_buffering_forwards_each_chunk_unchanged() {
+        let mut buf = ReplayBuffer::new(None);
+        let first_text = "a".repeat(96);
+        let second_text = "b".repeat(96);
+
+        let Some((first, first_secondary)) = buf.consume_chunk(msg_chunk("s", 1, &first_text))
+        else {
+            panic!("disabled buffering should send the first chunk immediately");
+        };
+        assert!(first_secondary.is_none());
+        match &first.expect_acp().update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
+                acp::ContentBlock::Text(text) => assert_eq!(text.text, first_text),
+                _ => panic!("expected text content"),
+            },
+            _ => panic!("expected AgentMessageChunk"),
+        }
+        assert!(buf.pending.is_none());
+
+        let Some((second, second_secondary)) = buf.consume_chunk(msg_chunk("s", 1, &second_text))
+        else {
+            panic!("disabled buffering should send the second chunk immediately");
+        };
+        assert!(second_secondary.is_none());
+        match &second.expect_acp().update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
+                acp::ContentBlock::Text(text) => assert_eq!(text.text, second_text),
+                _ => panic!("expected text content"),
+            },
+            _ => panic!("expected AgentMessageChunk"),
+        }
+        assert!(buf.pending.is_none());
+    }
+
+    #[test]
     fn buffers_first_chunk_and_updates_count_and_bytes() {
         let mut buf = ReplayBuffer::new(Some(settings(100, 1_000_000)));
         let n = msg_chunk("s", 1, "hello");

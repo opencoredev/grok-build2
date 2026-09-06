@@ -391,6 +391,34 @@ fn evaluator_blocker_streak_is_persisted_and_resettable() {
 }
 
 #[test]
+fn evaluator_failure_streak_is_persisted_and_resettable() {
+    let mut t = make_tracker();
+    activate_tracker(&mut t);
+    assert_eq!(t.record_evaluator_failure(), 1);
+    assert_eq!(t.record_evaluator_failure(), 2);
+    let encoded = serde_json::to_string(t.snapshot().unwrap()).unwrap();
+    let restored: GoalOrchestration = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(restored.evaluator_failure_streak, 2);
+    t.reset_evaluator_failure();
+    assert_eq!(t.snapshot().unwrap().evaluator_failure_streak, 0);
+}
+
+#[test]
+fn evaluator_failure_resets_a_stale_blocker_streak() {
+    let mut t = make_tracker();
+    activate_tracker(&mut t);
+    assert_eq!(t.record_evaluator_blocker("missing_access"), 1);
+    assert_eq!(t.record_evaluator_blocker("missing_access"), 2);
+
+    t.reset_evaluator_blocker();
+    t.record_evaluator_failure();
+
+    assert!(t.snapshot().unwrap().evaluator_blocker_key.is_none());
+    assert_eq!(t.snapshot().unwrap().evaluator_blocked_streak, 0);
+    assert_eq!(t.record_evaluator_blocker("missing_access"), 1);
+}
+
+#[test]
 fn reset_classifier_stall_clears_streak_so_next_occurrence_is_first() {
     let mut t = make_tracker();
     activate_tracker(&mut t);
@@ -785,11 +813,29 @@ fn complete_from_active_succeeds() {
     let mut t = make_tracker();
     activate_tracker(&mut t);
     t.set_current_subagent(Some("sub-1".into()), Some("worker".into()));
+    {
+        let snapshot = t.snapshot_mut().unwrap();
+        snapshot.planning_in_flight = true;
+        snapshot.verifying_in_flight = true;
+        snapshot.live_subagent_tokens = 200;
+        snapshot.live_tokens_by_model = vec![("model".to_string(), 200)];
+        snapshot.live_context_pct = 50;
+        snapshot.live_turn_count = 2;
+        snapshot.live_tool_call_count = 3;
+    }
 
     assert!(t.complete());
     assert_eq!(t.status(), Some(GoalStatus::Complete));
     assert!(t.current_subagent_id().is_none());
-    assert!(t.snapshot().unwrap().current_subagent_role.is_none());
+    let snapshot = t.snapshot().unwrap();
+    assert!(snapshot.current_subagent_role.is_none());
+    assert!(!snapshot.planning_in_flight);
+    assert!(!snapshot.verifying_in_flight);
+    assert_eq!(snapshot.live_subagent_tokens, 0);
+    assert!(snapshot.live_tokens_by_model.is_empty());
+    assert_eq!(snapshot.live_context_pct, 0);
+    assert_eq!(snapshot.live_turn_count, 0);
+    assert_eq!(snapshot.live_tool_call_count, 0);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Wiring tests for MCP tool-layer images through `handle_bridge_tool_success`.
 use super::support::*;
 use super::*;
+use base64::Engine as _;
 use xai_grok_sampling_types::{ContentPart, ConversationItem};
 use xai_grok_tools::types::output::{MCPOutput, ToolOutput, ToolRunResult};
 use xai_grok_tools::util::base64_images::{ExtractedImage, IMAGE_CONTENT_PLACEHOLDER};
@@ -59,14 +60,12 @@ async fn handle_bridge_tool_success_multimodal_mcp_image_deferred_followup() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = tokio::sync::mpsc::unbounded_channel::<
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel::<
                 xai_acp_lib::AcpClientMessage,
             >();
-            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<
-                PersistenceMsg,
-            >();
-            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx)
-                .await;
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let (actor, mut event_rx) =
+                create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
             assert!(!actor.is_cursor_harness());
             let payload = vision_ok_png_b64();
             let parsed_args = serde_json::json!({});
@@ -104,6 +103,24 @@ async fn handle_bridge_tool_success_multimodal_mcp_image_deferred_followup() {
                 .rev()
                 .find(|i| matches!(i, ConversationItem::ToolResult(_)))
                 .expect("tool result pushed");
+            assert!(
+                std::iter::from_fn(|| event_rx.try_recv().ok()).any(|event| matches!(
+                    event,
+                    SessionEvent::Notification(SessionNotification::Acp(notification))
+                        if matches!(
+                            &notification.update,
+                            acp::SessionUpdate::ToolCallUpdate(update)
+                                if update.fields.content.as_ref().is_some_and(|content| content.iter().any(|item| matches!(
+                                    item,
+                                    acp::ToolCallContent::Content(acp::Content {
+                                        content: acp::ContentBlock::Image(image),
+                                        ..
+                                    }) if image.data == payload && image.mime_type == "image/png"
+                                )))
+                        )
+                )),
+                "completed MCP tool update must retain the inline image for replay"
+            );
             let text = tool_result_text(tool);
             assert!(
                 text.contains(IMAGE_CONTENT_PLACEHOLDER),

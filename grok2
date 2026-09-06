@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROXY_HOME="${CLI_PROXY_HOME:-${HOME:?}/.cli-proxy-api}"
+PROXY_BIN="${CLI_PROXY_BIN:-$PROXY_HOME/bin/cli-proxy-api}"
+PROXY_CONFIG="${CLI_PROXY_CONFIG:-$PROXY_HOME/config.yaml}"
+PROXY_URL="${CLI_PROXY_URL:-http://127.0.0.1:8317}"
+PROXY_LOG="${CLI_PROXY_LOG:-$PROXY_HOME/cli-proxy-api.log}"
+PROXY_SERVICE_LABEL="${CLI_PROXY_SERVICE_LABEL:-com.leo.cliproxyapi}"
+PROXY_SERVICE_TARGET="gui/$(id -u)/$PROXY_SERVICE_LABEL"
+GROK_INSTALL_DIR="${GROK2_INSTALL_DIR:-${HOME:?}/.grok/grok2}"
+GROK_BINARY="${GROK2_BINARY:-$GROK_INSTALL_DIR/xai-grok-pager}"
+GROK_BUILD_TARGET_DIR="${HOME:?}/.cache/grok2-target"
+CARGO_BINARY="$GROK_BUILD_TARGET_DIR/debug/xai-grok-pager"
+export CLI_PROXY_BIN="$PROXY_BIN"
+export CLI_PROXY_CONFIG="$PROXY_CONFIG"
+# This fork must not replace itself with the upstream distribution.
+export GROK_DISABLE_AUTOUPDATER=1
+
+die() {
+  printf 'grok2: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  grok2                           Launch the installed Grok 2 binary
+  grok2 --resume SESSION_ID        Reopen an existing session
+  grok2 --continue                 Reopen the latest session in this directory
+  ./grok2 models                  List models from CLIProxyAPI
+  ./grok2 --model MODEL           Launch with a specific model
+  ./grok2 --single "PROMPT"       Run one prompt and exit
+  ./grok2 login [PROVIDER]        Sign in to a subscription
+  grok2 build                     Rebuild and install the Grok 2 binary
+  ./grok2 check                   Check the local setup
+
+Login providers: all, codex, claude, devin, xai, cursor
+EOF
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+require_file() {
+  [[ -f "$1" ]] || die "missing file: $1"
+}
+
+proxy_is_running() {
+  local status
+  status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --max-time 2 "$PROXY_URL/v1/models" 2>/dev/null || true)"
+  [[ "$status" == "200" || "$status" == "401" || "$status" == "403" ]]
+}
+
+start_proxy() {
+  if proxy_is_running; then
+    return
+  fi
+
+  printf 'Starting CLIProxyAPI...\n'
+  if launchctl print "$PROXY_SERVICE_TARGET" >/dev/null 2>&1; then
+    launchctl kickstart -k "$PROXY_SERVICE_TARGET"
+  else
+    nohup "$PROXY_BIN" --config "$PROXY_CONFIG" \
+      >>"$PROXY_LOG" 2>&1 &
+  fi
+
+  for _ in {1..50}; do
+    if proxy_is_running; then
+      return
+    fi
+    sleep 0.2
+  done
+  die "CLIProxyAPI did not start. Check $PROXY_LOG"
+}
+
+load_proxy_key() {
+  local key
+  key="$(ruby -ryaml -e '
+    config = YAML.load_file(ARGV.fetch(0)) || {}
+    keys = Array(config["api-keys"])
+    abort "config has no api-keys entry" if keys.empty?
+    print keys.first
+  ' "$PROXY_CONFIG")" || die "could not read the local CLIProxyAPI client key"
+  [[ -n "$key" ]] || die "the local CLIProxyAPI client key is empty"
+  export OPENAI_API_KEY="$key"
+}
+
+login_provider() {
+  local provider="$1"
+  local flag
+  case "$provider" in
+    codex) flag="-codex-login" ;;
+    claude) flag="-claude-login" ;;
+    devin) flag="-devin-login" ;;
+    xai) flag="-xai-login" ;;
+    cursor) flag="-cursor-login" ;;
+    *) die "unknown login provider: $provider" ;;
+  esac
+  "$PROXY_BIN" --config "$PROXY_CONFIG" "$flag"
+}
+
+login() {
+  local provider="${1:-all}"
+  if [[ "$provider" == "all" ]]; then
+    login_provider codex
+    login_provider claude
+    login_provider devin
+    login_provider xai
+    login_provider cursor
+  else
+    login_provider "$provider"
+  fi
+}
+
+build_grok() {
+  [[ -f "$REPO_DIR/Cargo.toml" ]] || die "build requires a source checkout; run its ./grok2 build"
+  require_command cargo
+  cargo build --manifest-path "$REPO_DIR/Cargo.toml" \
+    --target-dir "$GROK_BUILD_TARGET_DIR" \
+    -p xai-grok-pager-bin
+  [[ -x "$CARGO_BINARY" ]] || die "Cargo did not create the Grok binary: $CARGO_BINARY"
+  local binary_dir
+  binary_dir="$(dirname -- "$GROK_BINARY")"
+  mkdir -p "$binary_dir"
+  local staged_binary="$binary_dir/.xai-grok-pager.new.$$"
+  cp "$CARGO_BINARY" "$staged_binary"
+  chmod 755 "$staged_binary"
+  mv -f "$staged_binary" "$GROK_BINARY"
+  printf 'Installed Grok 2 at %s\n' "$GROK_BINARY"
+}
+
+ensure_grok_binary() {
+  [[ -x "$GROK_BINARY" ]] || die "Grok 2 is not built. Run: $REPO_DIR/grok2 build"
+}
+
+case "${1:-}" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  build)
+    build_grok
+    exit 0
+    ;;
+esac
+
+require_command curl
+require_command ruby
+require_file "$PROXY_BIN"
+require_file "$PROXY_CONFIG"
+
+case "${1:-}" in
+  login)
+    shift
+    login "${1:-all}"
+    exit 0
+    ;;
+  models)
+    start_proxy
+    load_proxy_key
+    PROXY_URL="$PROXY_URL" ruby -rjson -rnet/http -e '
+      uri = URI(ENV.fetch("PROXY_URL") + "/v1/models")
+      request = Net::HTTP::Get.new(uri)
+      request["Authorization"] = "Bearer #{ENV.fetch("OPENAI_API_KEY")}"
+      response = Net::HTTP.start(uri.host, uri.port) { |http| http.request(request) }
+      abort "model request failed: #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+      JSON.parse(response.body).fetch("data", []).sort_by { |model| model.fetch("id") }.each do |model|
+        puts model.fetch("display_name", model.fetch("id"))
+      end
+    '
+    exit 0
+    ;;
+  check)
+    start_proxy
+    load_proxy_key
+    ensure_grok_binary
+    printf 'CLIProxyAPI: running at %s\n' "$PROXY_URL"
+    if launchctl print "$PROXY_SERVICE_TARGET" >/dev/null 2>&1; then
+      printf 'CLIProxyAPI service: managed by %s\n' "$PROXY_SERVICE_LABEL"
+    fi
+    printf 'Client key: loaded without printing it\n'
+    printf 'Grok binary: %s\n' "$GROK_BINARY"
+    printf 'Grok config: %s\n' "${HOME:?}/.grok/config.toml"
+    exit 0
+    ;;
+  run)
+    shift
+    ;;
+esac
+
+start_proxy
+load_proxy_key
+ensure_grok_binary
+exec "$GROK_BINARY" "$@"

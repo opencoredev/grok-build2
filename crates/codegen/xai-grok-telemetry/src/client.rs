@@ -459,7 +459,7 @@ pub fn init(
 ) {
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().unwrap_or_else(|err| err.into_inner());
-    *guard = if mode.is_disabled() {
+    *guard = if crate::NETWORK_TELEMETRY_DISABLED || mode.is_disabled() {
         None
     } else {
         Some(TelemetryClient::from_config(
@@ -491,7 +491,7 @@ pub fn init_if_needed(
     subscription_tier: Option<String>,
     http_client: reqwest::Client,
 ) {
-    if mode.is_disabled() {
+    if crate::NETWORK_TELEMETRY_DISABLED || mode.is_disabled() {
         return;
     }
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
@@ -534,9 +534,9 @@ mod tests {
         assert_eq!(event_value("grok-workspace-turn"), "turn");
     }
 
-    /// SessionMetrics must not attempt Mixpanel profile engage; sync_profile is a no-op unless mode is fully Enabled.
+    /// The fork policy must prevent even metadata-only session metrics.
     #[test]
-    fn sync_profile_is_noop_in_session_metrics_mode() {
+    fn network_telemetry_policy_prevents_session_metrics_client() {
         // No tokio runtime here on purpose: if the gate wrongly falls through, sync_profile's tokio::spawn panics and fails this test
         // Under #[tokio::test] the spawn would succeed and the test would pass even with the gate broken
         assert!(
@@ -575,8 +575,8 @@ mod tests {
         // Explicit call must no-op too (init already invoked it once).
         sync_profile();
         assert!(
-            is_session_metrics_enabled(),
-            "client must be live for session metrics"
+            !is_session_metrics_enabled(),
+            "this fork must not create a network telemetry client"
         );
         assert!(!is_enabled(), "product analytics must stay off");
     }

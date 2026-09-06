@@ -28,6 +28,7 @@ pub(crate) enum GoalEvaluatorDecision {
 #[serde(deny_unknown_fields)]
 pub(crate) struct GoalEvaluatorVerdict {
     pub decision: GoalEvaluatorDecision,
+    #[serde(alias = "reason")]
     pub evidence: String,
     pub next_step: String,
     pub blocker_key: String,
@@ -219,10 +220,23 @@ mod tests {
     }
 
     #[test]
+    fn accepts_legacy_reason_as_evidence() {
+        let verdict = parse_goal_evaluator_verdict(
+            r#"{"decision":"continue","reason":"widget wiring is unfinished","next_step":"finish project wiring","blocker_key":""}"#,
+        )
+        .expect("legacy evaluator output must not pause an active goal");
+
+        assert_eq!(verdict.decision, GoalEvaluatorDecision::Continue);
+        assert_eq!(verdict.evidence, "widget wiring is unfinished");
+        assert_eq!(verdict.next_step, "finish project wiring");
+    }
+
+    #[test]
     fn rejects_unknown_decision_extra_fields_and_empty_guidance() {
         for raw in [
             r#"{"decision":"achieved","evidence":"x","next_step":"y","blocker_key":""}"#,
             r#"{"decision":"continue","evidence":"x","next_step":"y","blocker_key":"","extra":true}"#,
+            r#"{"decision":"continue","evidence":"x","reason":"y","next_step":"z","blocker_key":""}"#,
             r#"{"decision":"continue","evidence":" ","next_step":"y","blocker_key":""}"#,
             r#"{"decision":"blocked","evidence":"x","next_step":"","blocker_key":"missing_access"}"#,
             r#"{"decision":"blocked","evidence":"x","next_step":"y","blocker_key":""}"#,

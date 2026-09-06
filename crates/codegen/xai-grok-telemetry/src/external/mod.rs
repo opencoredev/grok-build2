@@ -148,7 +148,11 @@ impl ExternalTelemetry {
 /// Called once from binary startup after config resolution, **before auth** (no credentials needed).
 /// `None` records the dormant state; the default path allocates nothing.
 pub fn init(cfg: Option<ExternalOtelConfig>) {
-    let value = cfg.and_then(build_handle);
+    let value = if crate::NETWORK_TELEMETRY_DISABLED {
+        None
+    } else {
+        cfg.and_then(build_handle)
+    };
     if EXTERNAL.set(value).is_err() {
         tracing::debug!("external otel: init called more than once; keeping first registration");
     }

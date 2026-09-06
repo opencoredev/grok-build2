@@ -51,6 +51,59 @@ fn test_conversation_request_to_chat_completion() {
 }
 
 #[test]
+fn chat_request_drops_nameless_tool_call_and_its_result() {
+    let messages = conversation_to_chat_messages(vec![
+        ConversationItem::user("Inspect the repository"),
+        ConversationItem::Assistant(AssistantItem {
+            content: "I will inspect it.".into(),
+            tool_calls: vec![ToolCall {
+                id: "".into(),
+                name: String::new(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            }],
+            model_id: None,
+            model_fingerprint: None,
+            reasoning_effort: None,
+        }),
+        ConversationItem::tool_result("", "Tool not found"),
+        ConversationItem::user("Continue"),
+    ]);
+
+    assert!(messages.iter().all(|message| message.tool_calls.is_empty()));
+    assert!(
+        messages.iter().all(|message| message.role != Role::Tool),
+        "the paired result must be removed with its invalid tool call"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.text_content() == "I will inspect it."),
+        "valid assistant text must survive the repair"
+    );
+}
+
+#[test]
+fn chat_request_drops_tool_call_with_empty_id_and_its_result() {
+    let messages = conversation_to_chat_messages(vec![
+        ConversationItem::Assistant(AssistantItem {
+            content: "I will inspect it.".into(),
+            tool_calls: vec![ToolCall {
+                id: "".into(),
+                name: "run_terminal_command".to_string(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            }],
+            model_id: None,
+            model_fingerprint: None,
+            reasoning_effort: None,
+        }),
+        ConversationItem::tool_result("", "Tool output"),
+    ]);
+
+    assert!(messages.iter().all(|message| message.tool_calls.is_empty()));
+    assert!(messages.iter().all(|message| message.role != Role::Tool));
+}
+
+#[test]
 fn test_user_with_image() {
     let mut user = ConversationItem::user("Check this image");
     user.add_image("https://example.com/image.png");

@@ -9,9 +9,15 @@ impl SessionActor {
         is_family_switch: bool,
         apply_prompt_override: bool,
         skip_prompt_rewrite: bool,
+        system_prompt_label: String,
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
         let model_id = acp::ModelId::new(sampling_config.model.clone());
+        if let Some(idle_timeout_secs) = sampling_config.idle_timeout_secs {
+            self.inference_idle_timeout
+                .set(std::time::Duration::from_secs(idle_timeout_secs));
+            self.signals_handle().set_tracing_config(idle_timeout_secs);
+        }
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)
@@ -80,7 +86,31 @@ impl SessionActor {
         self.invalidate_model_auth_memo();
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
-        if apply_prompt_override && !skip_prompt_rewrite {
+        let should_replace_identity_prompt = apply_prompt_override && {
+            let agent = self.agent.borrow();
+            agent.prompt_context().system_prompt_label != system_prompt_label
+        };
+        let identity_prompt = if should_replace_identity_prompt {
+            let (context, bridge) = {
+                let agent = self.agent.borrow();
+                (
+                    agent.prompt_context_with_system_prompt_label(system_prompt_label),
+                    agent.tool_bridge().clone(),
+                )
+            };
+            let prompt = context.render(&bridge).await.unwrap_or_default();
+            self.agent
+                .borrow_mut()
+                .replace_rendered_prompt(context.clone(), prompt.clone());
+            save_prompt_context(&self.session_info, &context);
+            save_system_prompt(&self.session_info, &prompt);
+            Some(prompt)
+        } else {
+            None
+        };
+        if apply_prompt_override && (!skip_prompt_rewrite || identity_prompt.is_some()) {
+            let active_prompt =
+                identity_prompt.unwrap_or_else(|| self.agent.borrow().system_prompt().to_string());
             let mut conversation = self.chat_state_handle.get_conversation().await;
             for item in conversation.iter_mut() {
                 if let ConversationItem::System(sys) = item {
@@ -89,8 +119,7 @@ impl SessionActor {
                             xai_grok_agent::prompt::template::COMPACT_SYSTEM_PROMPT,
                         );
                     } else {
-                        sys.content =
-                            std::sync::Arc::<str>::from(self.agent.borrow().system_prompt());
+                        sys.content = std::sync::Arc::<str>::from(active_prompt.as_str());
                     }
                     break;
                 }
@@ -102,7 +131,7 @@ impl SessionActor {
                 model_id = %model_id.0,
                 "handle_set_session_model: skipping prompt override (apply_prompt_override=false)"
             );
-        } else {
+        } else if skip_prompt_rewrite {
             tracing::info!(
                 session_id = %self.session_info.id.0,
                 model_id = %model_id.0,

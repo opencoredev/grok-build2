@@ -555,11 +555,6 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::HowTo,
         },
         PaletteEntry {
-            label: "Tutorial".into(),
-            shortcut: "/tutorial".into(),
-            command: PaletteCommand::SlashCommand("/tutorial".into()),
-        },
-        PaletteEntry {
             label: "Quit".into(),
             shortcut: "Ctrl+Q".into(),
             command: PaletteCommand::Quit,
@@ -678,6 +673,7 @@ impl ActiveModal {
                 "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                 "model" | "m" => "Pick model",
                 "theme" | "t" => "Pick theme",
+                "login" => "Choose provider",
                 _ => "Pick option",
             },
             ActiveModal::DocPicker { .. } => "How-to Guides",
@@ -1210,7 +1206,7 @@ pub fn render_doc_viewer_overlay(
         &doc_shortcuts,
     );
 }
-/// [`render_doc_viewer_overlay`] with caller-supplied footer shortcuts (the tutorial adds a next-topic hint).
+/// [`render_doc_viewer_overlay`] with caller-supplied footer shortcuts.
 #[allow(clippy::too_many_arguments)]
 pub fn render_doc_viewer_overlay_with_shortcuts(
     buf: &mut ratatui::buffer::Buffer,
@@ -1361,7 +1357,7 @@ mod palette_sharing_tests {
     #[test]
     fn palette_drops_slash_rows_the_mode_cannot_run() {
         let minimal = slash_rows(crate::app::ScreenMode::Minimal);
-        for gated in ["/theme", "/dashboard", "/tutorial"] {
+        for gated in ["/theme", "/dashboard"] {
             assert!(!minimal.contains(&gated.to_string()), "{gated} in minimal");
         }
         assert!(
@@ -1369,7 +1365,7 @@ mod palette_sharing_tests {
             "mode-agnostic rows stay: {minimal:?}"
         );
         let fullscreen = slash_rows(crate::app::ScreenMode::Fullscreen);
-        for offered in ["/theme", "/dashboard", "/tutorial"] {
+        for offered in ["/theme", "/dashboard"] {
             assert!(
                 fullscreen.contains(&offered.to_string()),
                 "{offered} missing in fullscreen"

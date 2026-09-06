@@ -442,11 +442,10 @@ impl AgentBuilder {
         self.lsp = Some(handle);
         self
     }
-    /// Set the image generation configuration.
+    /// Set the legacy Imagine client configuration.
     ///
-    /// When `Enabled`, an `ImageGenClient` is created and injected into the ToolBridge's resources and the `image_gen` tool is registered.
-    /// The tool calls the xAI Imagine API with session credentials.
-    /// When `Disabled` (default), the tool is not registered.
+    /// When `Enabled`, an `ImageGenClient` is created for the native `image_edit`
+    /// tool. Native `image_gen` is not registered; `/imagine` uses the Codex MCP.
     pub fn with_image_gen_config(
         mut self,
         config: xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
@@ -696,11 +695,6 @@ impl AgentBuilder {
                 tool_config
                     .tools
                     .push((&xai_grok_tools::implementations::grok_build::LspTool).into());
-            }
-            if self.image_gen_config.image_gen_enabled() {
-                tool_config
-                    .tools
-                    .push((&xai_grok_tools::implementations::grok_build::ImageGenTool).into());
             }
             if self.image_gen_config.image_edit_enabled() {
                 tool_config
@@ -1363,6 +1357,42 @@ mod tests {
         assert_eq!(active_agent_message_tool_count(Some(false), false).await, 0);
         assert_eq!(active_agent_message_tool_count(None, true).await, 0);
         assert_eq!(active_agent_message_tool_count(Some(false), true).await, 0);
+    }
+    #[tokio::test]
+    async fn enabled_imagine_config_does_not_register_native_image_gen() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
+        let definitions = AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(crate::config::AgentDefinition::default_grok_build())
+        .with_image_gen_config(ImageGenConfig::Enabled {
+            api_key: "test-key".into(),
+            base_url: "https://example.invalid".into(),
+            extra_headers: Default::default(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            edit_model_override: None,
+            tier_restricted: false,
+        })
+        .build()
+        .await
+        .expect("agent should build")
+        .tool_definitions()
+        .await;
+        assert!(
+            definitions
+                .iter()
+                .all(|definition| definition.function.name != "image_gen")
+        );
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition.function.name == "image_edit")
+        );
     }
     #[tokio::test]
     async fn active_agent_messages_true_is_present_exactly_once() {

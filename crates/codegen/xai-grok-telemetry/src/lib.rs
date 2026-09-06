@@ -4,6 +4,12 @@
 //! Extracted from `xai-file-utils` so telemetry has its own ownership boundary (see CODEOWNERS).
 //! Consumers that only want event tracking and inference metrics no longer pull in Mixpanel/HTTP/identity dependencies.
 
+/// This fork never sends analytics, traces, or crash reports.
+///
+/// Keep the gate in the telemetry crate so every network telemetry path shares
+/// one compile-time policy. Local logs and local crash files remain available.
+pub const NETWORK_TELEMETRY_DISABLED: bool = true;
+
 pub mod activity;
 mod appender;
 pub mod client;
