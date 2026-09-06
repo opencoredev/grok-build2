@@ -1902,8 +1902,11 @@ mod tests {
         );
     }
     /// `--restore-code --worktree` stays on the existing defer path.
+    #[serial_test::serial(GROK_HOME)]
     #[tokio::test]
     async fn remote_miss_restore_code_with_worktree_defers() {
+        let fx = crate::test_util::GrokHomeFixture::new();
+        let cwd = fx.cwd_str();
         let id = "no such remote target";
         let out = materialize_startup_for_cwd(
             remote_miss_ctx(true, true),
@@ -1911,7 +1914,7 @@ mod tests {
                 session_id: Some(id.into()),
                 most_recent_for_cwd: false,
             },
-            "/nonexistent/cwd/for/remote-miss-code-wt",
+            &cwd,
         )
         .await
         .unwrap();
@@ -1932,8 +1935,11 @@ mod tests {
             other => panic!("expected Resume, got {other:?}"),
         }
     }
+    #[serial_test::serial(GROK_HOME)]
     #[tokio::test]
     async fn remote_miss_worktree_without_restore_code_suppresses_snapshot() {
+        let fx = crate::test_util::GrokHomeFixture::new();
+        let cwd = fx.cwd_str();
         let id = "no such remote target";
         let out = materialize_startup_for_cwd(
             remote_miss_ctx(false, true),
@@ -1941,7 +1947,7 @@ mod tests {
                 session_id: Some(id.into()),
                 most_recent_for_cwd: false,
             },
-            "/nonexistent/cwd/for/remote-miss-wt-no-code",
+            &cwd,
         )
         .await
         .unwrap();

@@ -112,18 +112,12 @@ impl SessionActor {
             let active_prompt =
                 identity_prompt.unwrap_or_else(|| self.agent.borrow().system_prompt().to_string());
             let mut conversation = self.chat_state_handle.get_conversation().await;
-            for item in conversation.iter_mut() {
-                if let ConversationItem::System(sys) = item {
-                    if use_concise {
-                        sys.content = std::sync::Arc::<str>::from(
-                            xai_grok_agent::prompt::template::COMPACT_SYSTEM_PROMPT,
-                        );
-                    } else {
-                        sys.content = std::sync::Arc::<str>::from(active_prompt.as_str());
-                    }
-                    break;
-                }
-            }
+            let prompt = if use_concise {
+                xai_grok_agent::prompt::template::COMPACT_SYSTEM_PROMPT
+            } else {
+                active_prompt.as_str()
+            };
+            let _ = replace_or_insert_system_head(&mut conversation, prompt);
             self.chat_state_handle.replace_conversation(conversation);
         } else if !apply_prompt_override {
             tracing::info!(

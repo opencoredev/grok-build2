@@ -1083,7 +1083,7 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
         );
         let mut shell = std::process::Command::new(bash);
         shell
-            .args(["-ic", &command])
+            .args(["--norc", "-ic", &command])
             .env(
                 "PATH",
                 format!(
@@ -1146,7 +1146,11 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
     };
     let mut shell = std::process::Command::new(bash);
     shell
-        .args(["-ic", "alias ssh='grok wrap ssh'; command ssh host"])
+        .args([
+            "--norc",
+            "-ic",
+            "alias ssh='grok wrap ssh'; command ssh host",
+        ])
         .env("CAPTURE", &capture)
         .env(
             "PATH",

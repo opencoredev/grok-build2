@@ -601,9 +601,9 @@ mod tests {
         assert_eq!(record.restorable_turn_number, Some(6));
     }
 
-    /// Verifies that each request resolves auth again, so a rotated token is picked up.
+    /// Registration must not send session metadata or credentials from this fork.
     #[tokio::test]
-    async fn session_registry_client_uses_active_auth_for_each_request() {
+    async fn session_registry_client_does_not_send_registration() {
         use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig};
         use axum::{Router, response::IntoResponse, routing::post};
         use chrono::{Duration, Utc};
@@ -661,11 +661,7 @@ mod tests {
         };
         client.register(&req).await.unwrap();
 
-        let sent = captured.lock().clone().expect("server saw the request");
-        assert_eq!(
-            sent, "Bearer fresh-from-auth-manager",
-            "outgoing bearer must come from AuthManager (not the build-time token)"
-        );
+        assert!(captured.lock().is_none());
     }
 
     // last_turn_number can run ahead of restorable_turn_number: a turn can be done while the session-state upload is still in flight

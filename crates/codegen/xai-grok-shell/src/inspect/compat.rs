@@ -199,7 +199,7 @@ mod tests {
         let report = resolve_without_env(Ok(&effective_config));
 
         assert!(!report.remote_settings_loaded);
-        assert_eq!(report.cells.len(), 13);
+        assert_eq!(report.cells.len(), 15);
         assert!(
             report
                 .cells
@@ -213,7 +213,7 @@ mod tests {
                 .filter(|entry| entry.vendor == "codex")
                 .map(|entry| entry.surface.as_str())
                 .collect::<Vec<_>>(),
-            vec!["sessions"]
+            vec!["skills", "mcps", "sessions"]
         );
         let session = entry(&report, "codex", "sessions");
         assert_eq!(session.enabled, CompatConfig::default().codex.sessions);

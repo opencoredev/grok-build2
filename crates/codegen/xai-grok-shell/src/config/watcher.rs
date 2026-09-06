@@ -885,10 +885,11 @@ mod tests {
     #[test]
     fn late_codex_directory_creation_attaches_config_watch() {
         let home = TempDir::new().unwrap();
-        let codex_home = home.path().join(".codex");
+        let home_path = dunce::canonicalize(home.path()).unwrap();
+        let codex_home = home_path.join(".codex");
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (parent_watcher, late_watcher) =
-            install_late_codex_watcher(Some(home.path()), Some(&codex_home), tx);
+            install_late_codex_watcher(Some(&home_path), Some(&codex_home), tx);
         let Some(_parent_watcher) = parent_watcher else {
             return;
         };
@@ -1209,7 +1210,7 @@ mod tests {
         assert_eq!(plan.project_parent_watch.as_deref(), Some(project));
 
         let mut expected = vendor_skill_refresh_dirs(&project_claude).to_vec();
-        for name in [".grok", ".agents", ".cursor"] {
+        for name in [".grok", ".agents", ".cursor", ".codex"] {
             let root = project.join(name);
             expected.push((root.clone(), RecursiveMode::NonRecursive));
             expected.extend(vendor_skill_refresh_dirs(&root));

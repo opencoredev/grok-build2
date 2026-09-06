@@ -510,6 +510,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "import-claude",
     "jump",
     "login",
+    "reauth",
     "logout",
     "log",
     "loop",

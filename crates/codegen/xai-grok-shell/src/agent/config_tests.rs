@@ -6996,15 +6996,13 @@ telemetry = "garbage"
 #[test]
 #[serial]
 fn is_telemetry_explicitly_disabled_sync_env_signals() {
-    unsafe { std::env::set_var("GROK_TELEMETRY_ENABLED", "0") };
-    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
+    let _enabled = xai_grok_test_support::EnvGuard::set("GROK_TELEMETRY_ENABLED", "0");
+    let _disabled = xai_grok_test_support::EnvGuard::unset("DISABLE_TELEMETRY");
     assert!(is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::set_var("GROK_TELEMETRY_ENABLED", "1") };
-    assert!(!is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    unsafe { std::env::set_var("DISABLE_TELEMETRY", "1") };
+    let _enabled_override = xai_grok_test_support::EnvGuard::set("GROK_TELEMETRY_ENABLED", "1");
     assert!(is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
+    let _disabled_override = xai_grok_test_support::EnvGuard::set("DISABLE_TELEMETRY", "1");
+    assert!(is_telemetry_explicitly_disabled_sync());
 }
 #[test]
 fn version_overrides_apply_into_typed_config() {
