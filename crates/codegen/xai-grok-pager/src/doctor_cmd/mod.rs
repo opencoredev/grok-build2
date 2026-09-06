@@ -81,9 +81,15 @@ fn configured_report_for_terminal(
 fn collect_report_with(
     snapshot: crate::diagnostics::probes::StandaloneDiagnosticSnapshot<'_>,
 ) -> DiagnosticReport {
-    let mut report = crate::diagnostics::view(snapshot.into());
+    let mut report = report_from_snapshot(snapshot);
     crate::diagnostics::apply_voice_probe(&mut report, true);
     report
+}
+
+fn report_from_snapshot(
+    snapshot: crate::diagnostics::probes::StandaloneDiagnosticSnapshot<'_>,
+) -> DiagnosticReport {
+    crate::diagnostics::view(snapshot.into())
 }
 
 fn write_report(

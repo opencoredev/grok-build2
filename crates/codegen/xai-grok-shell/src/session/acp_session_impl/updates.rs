@@ -672,6 +672,10 @@ impl SessionActor {
                         .goal_tracker
                         .lock()
                         .snapshot()
+                        .filter(|o| {
+                            o.status == crate::session::goal_tracker::GoalStatus::Active
+                                || o.status.is_paused()
+                        })
                         .map(|o| o.goal_id.clone());
                     let mut records = self.subagent_token_records.lock();
                     let anchor = resumed_from
@@ -785,6 +789,10 @@ impl SessionActor {
                     .goal_tracker
                     .lock()
                     .snapshot()
+                    .filter(|o| {
+                        o.status == crate::session::goal_tracker::GoalStatus::Active
+                            || o.status.is_paused()
+                    })
                     .map(|o| o.goal_id.clone());
                 let progress = {
                     let mut records = self.subagent_token_records.lock();

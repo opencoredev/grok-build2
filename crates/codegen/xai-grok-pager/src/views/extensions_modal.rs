@@ -214,6 +214,7 @@ fn skill_group(skill: &SkillInfo) -> SkillGroup {
             },
             ConfigSource::Builtin
             | ConfigSource::ConfigToml { .. }
+            | ConfigSource::CodexConfig { .. }
             | ConfigSource::ClaudeJson { .. }
             | ConfigSource::McpJson { .. }
             | ConfigSource::Cli { .. }
@@ -7368,6 +7369,20 @@ mod tests {
                 .iter()
                 .any(|l| l.starts_with("Plugin: beta-plugin ("))
         );
+    }
+
+    #[test]
+    fn codex_config_skills_use_config_group() {
+        let mut skill = make_skill("codex", "Codex skill");
+        skill.config_source = Some(
+            xai_grok_tools::types::config_source::ConfigSource::CodexConfig {
+                path: std::path::PathBuf::from("/home/user/.codex/config.toml"),
+            },
+        );
+
+        let group = skill_group(&skill);
+        assert_eq!(group.rank, 5);
+        assert_eq!(group.label, "Config");
     }
 
     #[test]

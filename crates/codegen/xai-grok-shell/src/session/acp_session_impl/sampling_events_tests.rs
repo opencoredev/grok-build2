@@ -3,6 +3,54 @@ use super::super::replay_buffer_send_update_tests::{
 };
 use super::*;
 
+#[tokio::test(flavor = "current_thread")]
+async fn large_provider_delta_is_split_for_live_acp_rendering() {
+    use xai_grok_sampler::{RequestId, SamplingChannel, SamplingEvent};
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut fixture = make_replay_send_update_fixture().await;
+            let actor = Arc::new(fixture.actor);
+            let request_id = RequestId::random();
+            own_request(&actor, &request_id);
+            let text = format!(
+                "{} {}",
+                "The provider returned a complete paragraph in one streaming delta. ".repeat(4),
+                "Unicode stays intact: 🙂 汉字."
+            );
+
+            actor
+                .handle_sampling_event(SamplingEvent::ChannelToken {
+                    request_id,
+                    channel: SamplingChannel::Text,
+                    text: text.clone(),
+                    chunk_index: 67,
+                })
+                .await;
+
+            let mut emitted = Vec::new();
+            while let Ok(SessionEvent::Notification(SessionNotification::Acp(notification))) =
+                fixture.event_rx.try_recv()
+            {
+                let acp::SessionUpdate::AgentMessageChunk(chunk) = notification.update else {
+                    continue;
+                };
+                let acp::ContentBlock::Text(content) = chunk.content else {
+                    continue;
+                };
+                assert!(
+                    content.text.chars().count() <= MAX_LIVE_TEXT_CHUNK_CHARS,
+                    "one active-stream ACP update must stay within the live rendering budget"
+                );
+                emitted.push(content.text);
+            }
+
+            assert!(emitted.len() > 1, "a paragraph-sized delta must be split");
+            assert_eq!(emitted.concat(), text, "splitting must preserve exact text");
+        })
+        .await;
+}
+
 fn own_request(actor: &SessionActor, request_id: &xai_grok_sampler::RequestId) {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     actor
@@ -1185,6 +1233,44 @@ async fn tool_call_delta_marks_streaming_capture_phase() {
         .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn backend_tool_start_marks_streaming_capture_phase() {
+    use xai_grok_sampler::{RequestId, SamplingEvent};
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let fixture = make_replay_send_update_fixture().await;
+            let actor = Arc::new(fixture.actor);
+
+            *actor
+                .current_prompt_id
+                .lock()
+                .expect("current_prompt_id mutex poisoned") =
+                Some("prompt-backend-tool".to_string());
+
+            let req = RequestId::random();
+            own_request(&actor, &req);
+            actor
+                .handle_sampling_event(SamplingEvent::StreamStarted {
+                    request_id: req.clone(),
+                    timestamp_ms: 0,
+                })
+                .await;
+            actor
+                .handle_sampling_event(SamplingEvent::BackendToolCallStarted {
+                    request_id: req,
+                    call_id: "backend-call".to_string(),
+                    name: "web_search".to_string(),
+                })
+                .await;
+
+            let cap = actor.streaming_turn_capture.lock().clone();
+            assert_eq!(cap.phase, CapturePhase::ToolCall);
+            assert!(cap.current_generation_has_visible_output());
+        })
+        .await;
+}
+
 /// `ToolCallDelta` on an idle (empty, never-begun) slot must not fabricate a phase; there is no partial to attribute it to.
 #[tokio::test(flavor = "current_thread")]
 async fn tool_call_delta_on_idle_slot_leaves_phase_pending() {
@@ -1350,16 +1436,16 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                 })
                 .await;
 
-            // Turn-loop side: a reasoning-only empty response is non-recoverable, so it is a terminal error
-            // It stamps the classification onto the capture
+            // Turn-loop side: the retry budget is exhausted, so this attempt is terminal
+            // and stamps the classification onto the capture
             // `SamplerFailureRecovery` is not `Debug`, so match rather than `expect_err`
             let Err(_terminal) = actor
                 .handle_sampling_failure(
                     error,
                     0,
                     TransientRetryState {
-                        step_attempts: 0,
-                        prompt_attempts: 0,
+                        step_attempts: MAX_TRANSIENT_TURN_RETRIES,
+                        prompt_attempts: MAX_TRANSIENT_TURN_RETRIES,
                         episode_start: None,
                         enabled: true,
                     },
@@ -1367,7 +1453,7 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                 )
                 .await
             else {
-                panic!("a reasoning_only empty response must be a terminal error, not recoverable");
+                panic!("an exhausted reasoning_only response must be terminal");
             };
 
             // Take the capture exactly as the trace upload does: through the real `TakeStreamingCapture` command

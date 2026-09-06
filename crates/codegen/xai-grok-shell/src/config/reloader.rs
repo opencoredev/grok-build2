@@ -22,8 +22,8 @@ pub enum ConfigUpdate {
     ///
     /// 1. The global `[mcp_servers]` table in `~/.grok/config.toml`
     ///    changed.
-    /// 2. The user's home-level `~/.claude.json` changed.
-    ///    `load_claude_json_mcp_servers_as_configs` reads this file for every session, so the reload cannot be narrowed by cwd.
+    /// 2. A home-level compatibility source changed. This includes
+    ///    `~/.claude.json` and `~/.codex/config.toml`.
     ///
     /// Project-scoped changes emit [`Self::ProjectMcpServersChanged`] instead so the reload can be narrowed to matching cwds.
     /// Those are `<cwd>/.grok/config.toml`, `<cwd>/.mcp.json`, and the project-level `<cwd>/.claude.json`.
@@ -139,9 +139,7 @@ impl ConfigReloader {
             // `~/.claude.json` is loaded by every session (it does NOT live in a project root)
             // Its reload must broadcast through the legacy unit `McpServersChanged` arm
             // Routing it through the per-cwd variant would silently miss sessions outside `$HOME`
-            let has_home_claude_json = batch
-                .iter()
-                .any(|e| matches!(e, ConfigChangeEvent::HomeClaudeJsonChanged));
+            let has_home_mcp_config = has_home_mcp_config_change(&batch);
             let has_models_cache = batch
                 .iter()
                 .any(|e| matches!(e, ConfigChangeEvent::ModelsCacheChanged));
@@ -197,8 +195,8 @@ impl ConfigReloader {
 
             // Home-level `~/.claude.json` must broadcast to every session through the unit variant
             // Sessions outside `$HOME` would otherwise be silently skipped by the per-cwd `cwd_matches` filter
-            if has_home_claude_json {
-                info!("~/.claude.json change detected — broadcasting MCP reload");
+            if has_home_mcp_config {
+                info!("home compatibility config changed; broadcasting MCP reload");
                 let _ = self.config_update_tx.send(ConfigUpdate::McpServersChanged);
             }
 
@@ -431,6 +429,15 @@ fn collect_project_cwds(batch: &[ConfigChangeEvent]) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+fn has_home_mcp_config_change(batch: &[ConfigChangeEvent]) -> bool {
+    batch.iter().any(|event| {
+        matches!(
+            event,
+            ConfigChangeEvent::HomeClaudeJsonChanged | ConfigChangeEvent::HomeCodexConfigChanged
+        )
+    })
 }
 
 /// Content hash of the cwd-dependent MCP config files a `ProjectMcpServersChanged { cwd }` reload re-reads.
@@ -972,13 +979,15 @@ command = "/bin/test"
         assert_eq!(routed_project.as_deref(), Some(cwd.as_path()));
     }
 
-    /// `HomeClaudeJsonChanged` must NOT contribute a cwd to `collect_project_cwds`.
+    /// Home-level MCP compatibility sources must not contribute a cwd to
+    /// `collect_project_cwds`.
     /// Sessions outside `$HOME` would otherwise be silently skipped.
     /// The reloader broadcasts it via the unit `McpServersChanged` variant; this test locks that invariant at the helper layer.
     #[test]
-    fn collect_project_cwds_excludes_home_claude_json() {
+    fn collect_project_cwds_excludes_home_compat_sources() {
         let batch = vec![
             ConfigChangeEvent::HomeClaudeJsonChanged,
+            ConfigChangeEvent::HomeCodexConfigChanged,
             ConfigChangeEvent::ProjectConfigChanged {
                 path: PathBuf::from("/repo/x/.grok/config.toml"),
             },
@@ -987,6 +996,15 @@ command = "/bin/test"
         // Only the project entry contributes
         // The home-level `.claude.json` entry is silently dropped because it routes through the broadcast arm instead
         assert_eq!(cwds, vec![PathBuf::from("/repo/x")]);
+    }
+
+    #[test]
+    fn home_compat_batch_collapses_to_one_reload_signal() {
+        let batch = vec![
+            ConfigChangeEvent::HomeClaudeJsonChanged,
+            ConfigChangeEvent::HomeCodexConfigChanged,
+        ];
+        assert!(has_home_mcp_config_change(&batch));
     }
 
     /// `collect_project_cwds` extracts `<cwd>` from `ProjectConfigChanged` (`<cwd>/.grok/config.toml`) and `McpConfigChanged` (`<cwd>/.mcp.json`).

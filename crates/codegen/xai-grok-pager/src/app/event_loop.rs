@@ -670,13 +670,17 @@ fn suspend_retry_ready(retry_after: Option<Instant>, now: Instant) -> bool {
 #[derive(Debug, Default)]
 struct SuspendWaitReports {
     editor_reported: bool,
+    login_reported: bool,
     pager_reported: bool,
 }
 
 impl SuspendWaitReports {
-    fn reset_missing(&mut self, editor_pending: bool, pager_pending: bool) {
+    fn reset_missing(&mut self, editor_pending: bool, login_pending: bool, pager_pending: bool) {
         if !editor_pending {
             self.editor_reported = false;
+        }
+        if !login_pending {
+            self.login_reported = false;
         }
         if !pager_pending {
             self.pager_reported = false;
@@ -698,6 +702,7 @@ fn defer_suspend_retry(
 }
 
 const EDITOR_SUSPEND_WAIT: &str = "Editor is waiting for a safe terminal handoff";
+const LOGIN_SUSPEND_WAIT: &str = "Login is waiting for a safe terminal handoff";
 const TRANSCRIPT_SUSPEND_WAIT: &str = "Transcript is waiting for a safe terminal handoff";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -788,14 +793,15 @@ fn run_pending_suspends(
     suspend_wait_reports: &mut SuspendWaitReports,
 ) -> anyhow::Result<()> {
     let editor_pending = app.pending_editor.is_some();
+    let login_pending = app.pending_cli_proxy_login.is_some();
     let pager_pending = app.pending_pager_path.is_some();
-    suspend_wait_reports.reset_missing(editor_pending, pager_pending);
+    suspend_wait_reports.reset_missing(editor_pending, login_pending, pager_pending);
     if !suspend_retry_ready(*suspend_retry_after, Instant::now()) {
         return Ok(());
     }
     // The gate is consumed before any blocking park/drain attempt
     // A timeout must arm a fresh deadline before this function returns
-    if !editor_pending && !pager_pending {
+    if !editor_pending && !login_pending && !pager_pending {
         *suspend_retry_after = None;
         return Ok(());
     }
@@ -859,6 +865,53 @@ fn run_pending_suspends(
                 suspend_wait_reports.editor_reported = false;
             }
         }
+    }
+
+    if let Some(request) = app.pending_cli_proxy_login.take() {
+        let provider = request.provider;
+        let mut login_result = Err(std::io::Error::other("login command did not start"));
+        let moved_cursor = match suspend_for_child(
+            app.screen_mode,
+            terminal,
+            input_paused,
+            reader_parked,
+            input_rx,
+            || {
+                login_result = crate::app::cli_proxy_login::command_spec(provider)
+                    .map_err(std::io::Error::other)
+                    .and_then(|(bin, args)| std::process::Command::new(bin).args(args).status());
+            },
+        ) {
+            Ok(moved_cursor) => moved_cursor,
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                requeue_after_suspend_timeout(&mut app.pending_cli_proxy_login, request);
+                let first_timeout = defer_suspend_retry(
+                    suspend_retry_after,
+                    &mut suspend_wait_reports.login_reported,
+                    Instant::now(),
+                );
+                if first_timeout {
+                    report_suspend_wait(app, LOGIN_SUSPEND_WAIT);
+                    presenter.request_presentation(app, terminal, false);
+                }
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let message = match login_result {
+            Ok(status) if status.success() => {
+                format!(
+                    "{} login flow finished. Retry your prompt.",
+                    provider.label()
+                )
+            }
+            Ok(status) => format!("{} login failed with {status}.", provider.label()),
+            Err(error) => format!("{} login failed: {error}", provider.label()),
+        };
+        app.show_toast(&message);
+        restore_after_child(terminal, app.screen_mode, moved_cursor);
+        presenter.request_presentation(app, terminal, true);
+        suspend_wait_reports.login_reported = false;
     }
 
     // /transcript suspend: open the rendered transcript in $PAGER, then restore and delete the temp file
@@ -2411,7 +2464,10 @@ pub(crate) async fn run(
         };
 
         // Wake a deferred suspend retry without requiring unrelated input.
-        let suspend_retry_at = if app.pending_editor.is_some() || app.pending_pager_path.is_some() {
+        let suspend_retry_at = if app.pending_editor.is_some()
+            || app.pending_cli_proxy_login.is_some()
+            || app.pending_pager_path.is_some()
+        {
             suspend_retry_after
         } else {
             None
@@ -3529,7 +3585,9 @@ struct RoutedInputEvent {
 }
 
 fn tty_suspend_armed(app: &AppView) -> bool {
-    app.pending_editor.is_some() || app.pending_pager_path.is_some()
+    app.pending_editor.is_some()
+        || app.pending_cli_proxy_login.is_some()
+        || app.pending_pager_path.is_some()
 }
 
 fn normalize_input_event(
@@ -5069,6 +5127,15 @@ mod tests {
         assert!(tty_suspend_armed(&app));
     }
 
+    #[test]
+    fn cli_proxy_login_arms_tty_suspend() {
+        let mut app = crate::app::app_view::tests::test_app();
+        app.pending_cli_proxy_login = Some(crate::app::cli_proxy_login::PendingCliProxyLogin {
+            provider: crate::app::cli_proxy_login::CliProxyProvider::Devin,
+        });
+        assert!(tty_suspend_armed(&app));
+    }
+
     // ── is_voice_chord ───────────────────────────────────────────────────
 
     #[test]
@@ -5498,7 +5565,7 @@ mod tests {
             now
         ));
 
-        reports.reset_missing(false, false);
+        reports.reset_missing(false, false, false);
         assert!(!reports.editor_reported);
         retry_after = None;
         assert!(defer_suspend_retry(

@@ -394,7 +394,7 @@ async fn create_test_actor_inner(
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
         },
         session_start: std::time::Instant::now(),
-        inference_idle_timeout: Duration::from_secs(300),
+        inference_idle_timeout: std::cell::Cell::new(Duration::from_secs(300)),
         max_retries: 3,
         rate_limit_waits: crate::session::acp_session::RateLimitWaitConfig::default(),
         max_turns: None,

@@ -1009,6 +1009,7 @@ fn list_mcp_servers(
                 .to_string()
             });
             let vendor = match &source {
+                ConfigSource::CodexConfig { .. } => Some("codex".to_owned()),
                 ConfigSource::ClaudeJson { .. } => Some("claude".to_owned()),
                 ConfigSource::McpJson { path } => {
                     derive_vendor(&path.display().to_string()).map(String::from)

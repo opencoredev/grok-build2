@@ -23,6 +23,8 @@ pub enum ConfigSource {
     /// domain-specific: the declaring config.toml for MCP servers, the
     /// skill's own SKILL.md for `[skills].paths` skills.
     ConfigToml { path: PathBuf },
+    /// `~/.codex/config.toml` MCP servers.
+    CodexConfig { path: PathBuf },
     /// `~/.claude.json` MCP servers.
     ClaudeJson { path: PathBuf },
     /// `.mcp.json` project-level MCP config.
@@ -47,6 +49,7 @@ impl ConfigSource {
             Self::User { path } => format!("user: {}", path.display()),
             Self::Plugin { plugin_name, .. } => format!("plugin: {plugin_name}"),
             Self::ConfigToml { path } => format!("config: {}", path.display()),
+            Self::CodexConfig { .. } => "~/.codex/config.toml".into(),
             Self::ClaudeJson { .. } => "~/.claude.json".into(),
             Self::McpJson { path } => format!(".mcp.json: {}", path.display()),
             Self::Cli { .. } => "cli".into(),
@@ -64,6 +67,7 @@ impl ConfigSource {
             Self::User { .. } => "user".into(),
             Self::Plugin { plugin_name, .. } => format!("plugin: {plugin_name}"),
             Self::ConfigToml { .. } => "config".into(),
+            Self::CodexConfig { .. } => "~/.codex/config.toml".into(),
             Self::ClaudeJson { .. } => "~/.claude.json".into(),
             Self::McpJson { .. } => ".mcp.json".into(),
             Self::Cli { .. } => "cli".into(),
@@ -89,6 +93,7 @@ impl ConfigSource {
             | Self::User { path }
             | Self::Plugin { path, .. }
             | Self::ConfigToml { path }
+            | Self::CodexConfig { path }
             | Self::ClaudeJson { path }
             | Self::McpJson { path }
             | Self::Cli { path } => Some(path),

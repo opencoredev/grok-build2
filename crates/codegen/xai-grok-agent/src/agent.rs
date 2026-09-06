@@ -201,6 +201,20 @@ impl Agent {
             .unwrap_or_default();
     }
 
+    /// Prepare a prompt context for a model identity change without holding a mutable borrow while rendering.
+    pub fn prompt_context_with_system_prompt_label(&self, label: String) -> PromptContext {
+        let mut context = self.prompt_context.clone();
+        context.system_prompt_label = label;
+        context.build_timestamp_utc = chrono::Utc::now().to_rfc3339();
+        context
+    }
+
+    /// Install a prompt and the context that rendered it.
+    pub fn replace_rendered_prompt(&mut self, context: PromptContext, prompt: String) {
+        self.prompt_context = context;
+        self.system_prompt = prompt;
+    }
+
     /// Re-render the system prompt for a different definition, reusing the existing ToolBridge.
     /// Used for mid-session mode switching.
     pub async fn render_prompt_for_definition(&self, definition: &AgentDefinition) -> String {

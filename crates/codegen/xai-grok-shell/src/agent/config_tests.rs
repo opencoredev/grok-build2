@@ -3592,6 +3592,42 @@ fn e2e_models_endpoint_serde_alias_parses_as_models_list_url() {
     );
     assert!(cfg.endpoints.has_custom_endpoint());
 }
+
+#[test]
+fn custom_endpoint_adds_openai_key_to_config_defined_models() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "http://127.0.0.1:8317/v1"
+
+            [model.custom]
+            model = "custom-model"
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let models = resolve_model_list(&cfg, None);
+
+    assert_eq!(
+        models["custom"].env_key.as_ref().map(EnvKeys::names),
+        Some(vec!["OPENAI_API_KEY", "XAI_API_KEY"])
+    );
+}
+
+#[test]
+fn custom_endpoint_fallback_uses_openai_key() {
+    let endpoints = EndpointsConfig {
+        models_base_url: Some("http://127.0.0.1:8317/v1".to_owned()),
+        ..Default::default()
+    };
+    let model = ModelEntry::fallback("missing", &endpoints);
+
+    assert_eq!(
+        model.env_key.as_ref().map(EnvKeys::names),
+        Some(vec!["OPENAI_API_KEY", "XAI_API_KEY"])
+    );
+}
+
 #[test]
 fn e2e_config_models_parsed_directly_not_via_deep_merge() {
     let raw: toml::Value = toml::from_str(
@@ -4076,23 +4112,20 @@ fn resolve_trace_upload_disabled_when_telemetry_off_despite_remote_flag() {
 }
 #[test]
 #[serial]
-fn resolve_trace_upload_explicit_config_wins_over_telemetry_off() {
+fn resolve_trace_upload_stays_off_when_config_or_requirements_enable_it() {
     unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
     cfg.features.telemetry = Some(TelemetryMode::Disabled);
     cfg.telemetry.trace_upload = Some(true);
     let r = cfg.resolve_trace_upload();
-    assert!(
-        r.value,
-        "explicit trace_upload config wins over telemetry off"
-    );
-    assert_eq!(r.source, ConfigSource::Config);
+    assert!(!r.value, "this fork must never upload traces");
+    assert_eq!(r.source, ConfigSource::Default);
     cfg.telemetry.trace_upload = None;
     cfg.requirements
         .trace_upload
         .pin(true, crate::config::RequirementSource::Unknown);
-    assert!(cfg.resolve_trace_upload().value);
+    assert!(!cfg.resolve_trace_upload().value);
 }
 #[test]
 #[serial]
@@ -4113,8 +4146,8 @@ fn trace_upload_decision_debug_reports_winning_source() {
     assert_eq!(d["has_remote_settings"], serde_json::json!(true));
     cfg.telemetry.trace_upload = Some(true);
     let d = cfg.trace_upload_decision_debug();
-    assert_eq!(d["trace_upload"], serde_json::json!(true));
-    assert_eq!(d["trace_upload_source"], serde_json::json!("config"));
+    assert_eq!(d["trace_upload"], serde_json::json!(false));
+    assert_eq!(d["trace_upload_source"], serde_json::json!("default"));
     assert_eq!(d["in_cfg_telemetry_trace_upload"], serde_json::json!(true));
 }
 #[test]
@@ -4127,10 +4160,28 @@ fn resolve_trace_upload_honors_config_when_telemetry_on() {
     cfg.telemetry.trace_upload = Some(false);
     let r = cfg.resolve_trace_upload();
     assert!(!r.value);
-    assert_eq!(r.source, ConfigSource::Config);
+    assert_eq!(r.source, ConfigSource::Default);
     cfg.telemetry.trace_upload = None;
     let r = cfg.resolve_trace_upload();
-    assert!(r.value, "defaults on when telemetry fully enabled");
+    assert!(!r.value, "this fork must never upload traces");
+}
+
+#[test]
+fn telemetry_mode_stays_off_when_every_runtime_layer_enables_it() {
+    let mut cfg = Config::default();
+    cfg.features.telemetry = Some(TelemetryMode::Enabled);
+    cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        telemetry_enabled: Some(true),
+        ..Default::default()
+    });
+    cfg.requirements.telemetry.pin(
+        TelemetryMode::Enabled,
+        crate::config::RequirementSource::Unknown,
+    );
+
+    let resolved = cfg.resolve_telemetry_mode();
+    assert_eq!(resolved.value, TelemetryMode::Disabled);
+    assert_eq!(resolved.source, ConfigSource::Default);
 }
 #[test]
 #[serial]
@@ -6945,15 +6996,13 @@ telemetry = "garbage"
 #[test]
 #[serial]
 fn is_telemetry_explicitly_disabled_sync_env_signals() {
-    unsafe { std::env::set_var("GROK_TELEMETRY_ENABLED", "0") };
-    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
+    let _enabled = xai_grok_test_support::EnvGuard::set("GROK_TELEMETRY_ENABLED", "0");
+    let _disabled = xai_grok_test_support::EnvGuard::unset("DISABLE_TELEMETRY");
     assert!(is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::set_var("GROK_TELEMETRY_ENABLED", "1") };
-    assert!(!is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    unsafe { std::env::set_var("DISABLE_TELEMETRY", "1") };
+    let _enabled_override = xai_grok_test_support::EnvGuard::set("GROK_TELEMETRY_ENABLED", "1");
     assert!(is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
+    let _disabled_override = xai_grok_test_support::EnvGuard::set("DISABLE_TELEMETRY", "1");
+    assert!(is_telemetry_explicitly_disabled_sync());
 }
 #[test]
 fn version_overrides_apply_into_typed_config() {
@@ -7350,6 +7399,10 @@ fn config_model_reasoning_efforts_parses_inline_tables_and_bare_strings() {
                 { value = "high", label = "High", default = true },
                 { id = "deep", value = "xhigh", label = "Deep", description = "Max" },
             ]
+            variants = [
+                { effort = "high", model_id = "custom-high" },
+                { effort = "xhigh", model_id = "custom-xhigh" },
+            ]
 
             [model.shorthand]
             model = "shorthand"
@@ -7367,6 +7420,8 @@ fn config_model_reasoning_efforts_parses_inline_tables_and_bare_strings() {
     assert!(custom.reasoning_efforts[0].default);
     assert_eq!(custom.reasoning_efforts[1].id, "deep");
     assert_eq!(custom.reasoning_efforts[1].value, ReasoningEffort::Xhigh);
+    assert_eq!(custom.variants.len(), 2);
+    assert_eq!(custom.variants[0].model_id, "custom-high");
     let shorthand = &resolved.get("shorthand").expect("shorthand model").info;
     let ids: Vec<_> = shorthand
         .reasoning_efforts

@@ -47,6 +47,7 @@ fn deny_decision(
 }
 
 #[test]
+#[ignore = "network telemetry is disabled in this fork"]
 fn external_stream_end_to_end() {
     let collected = col::Collected::default();
     let endpoint = col::start_collector(collected.clone());

@@ -906,8 +906,10 @@ impl AgentView {
                                     return InputOutcome::Action(Action::FetchSessionList);
                                 }
 
-                                let is_picker =
-                                    matches!(trimmed.as_str(), "model" | "m" | "theme" | "t");
+                                let is_picker = matches!(
+                                    trimmed.as_str(),
+                                    "model" | "m" | "theme" | "t" | "login"
+                                );
                                 if is_picker
                                     && let Some(command) =
                                         self.prompt.slash_controller.registry().get(&trimmed)
@@ -1884,6 +1886,7 @@ impl AgentView {
                     "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                     "model" | "m" => "Pick model",
                     "theme" | "t" => "Pick theme",
+                    "login" => "Choose provider",
                     _ => "Pick option",
                 };
                 let picker_entries: Vec<PickerEntry> = items

@@ -238,6 +238,88 @@ fn create_test_goal(actor: &SessionActor) {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn evaluator_infrastructure_failure_keeps_active_goal_running() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let tmp = TempDir::new().expect("tempdir");
+            let (gateway_tx, _gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.goal_enabled = true;
+            actor.background_workflows_enabled = true;
+            set_goal_harness_for_tests(&actor);
+            actor.goal_tracker = Arc::new(parking_lot::Mutex::new(
+                crate::session::goal_tracker::GoalTracker::new(tmp.path().to_path_buf()),
+            ));
+            create_test_goal(&actor);
+            {
+                let mut tracker = actor.goal_tracker.lock();
+                tracker.record_evaluator_blocker("missing_access");
+                tracker.record_evaluator_blocker("missing_access");
+            }
+
+            let decision = actor.run_goal_round_end().await;
+
+            assert!(
+                matches!(decision, GoalRoundDecision::Continue(_)),
+                "an evaluator outage must not end active implementation work"
+            );
+            assert_eq!(
+                actor.goal_tracker.lock().status(),
+                Some(crate::session::goal_tracker::GoalStatus::Active)
+            );
+            let tracker = actor.goal_tracker.lock();
+            let snapshot = tracker.snapshot().expect("active goal snapshot");
+            assert!(snapshot.evaluator_blocker_key.is_none());
+            assert_eq!(snapshot.evaluator_blocked_streak, 0);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn repeated_evaluator_infrastructure_failures_pause_the_goal() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let tmp = TempDir::new().expect("tempdir");
+            let (gateway_tx, _gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.goal_enabled = true;
+            actor.background_workflows_enabled = true;
+            set_goal_harness_for_tests(&actor);
+            actor.goal_tracker = Arc::new(parking_lot::Mutex::new(
+                crate::session::goal_tracker::GoalTracker::new(tmp.path().to_path_buf()),
+            ));
+            create_test_goal(&actor);
+
+            for attempt in 1..3 {
+                assert!(
+                    matches!(
+                        actor.run_goal_round_end().await,
+                        GoalRoundDecision::Continue(_)
+                    ),
+                    "evaluator outage {attempt} must keep active work running"
+                );
+            }
+            assert!(
+                matches!(actor.run_goal_round_end().await, GoalRoundDecision::EndTurn),
+                "the bounded evaluator outage policy must prevent an infinite loop"
+            );
+            assert_eq!(
+                actor.goal_tracker.lock().status(),
+                Some(crate::session::goal_tracker::GoalStatus::InfraPaused)
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 #[serial]
 async fn send_now_restarts_planner_with_all_steering() {
     let local = tokio::task::LocalSet::new();

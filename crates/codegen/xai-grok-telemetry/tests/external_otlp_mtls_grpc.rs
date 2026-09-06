@@ -10,6 +10,7 @@ fn write_temp(contents: &str) -> (tempfile::NamedTempFile, String) {
 }
 
 #[test]
+#[ignore = "network telemetry is disabled in this fork"]
 fn external_stream_grpc_mtls_end_to_end() {
     col::init_test_tracing();
 

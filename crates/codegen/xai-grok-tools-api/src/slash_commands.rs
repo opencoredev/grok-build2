@@ -95,7 +95,7 @@ pub fn loop_schedule_instruction(args: &str, mode: LoopFireMode) -> String {
     )
 }
 
-/// Canonical name of the image generation tool; gates `/imagine`.
+/// Canonical name retained for native-image configuration compatibility.
 pub const IMAGE_GEN_TOOL_NAME: &str = "image_gen";
 
 /// Advertised name of the /imagine command.
@@ -116,10 +116,10 @@ pub fn imagine_usage_message() -> &'static str {
 /// Build the model instruction that `/imagine` expands into for `prompt`.
 pub fn imagine_instruction(prompt: &str) -> String {
     format!(
-        "Call the image_gen tool immediately, passing the user's prompt below \
-         verbatim — do not rewrite, embellish, or expand it. \
-         After the tool completes, briefly acknowledge and mention \
-         where the image was saved.\n\n\
+        "Use search_tool to find the Codex MCP image generation tool, then call the returned \
+         qualified tool with use_tool and input that matches its schema. Pass the user's prompt \
+         below verbatim. Do not rewrite, embellish, or expand it. After the tool completes, \
+         briefly acknowledge the result.\n\n\
          Prompt: {prompt}"
     )
 }
@@ -156,8 +156,9 @@ images or retry.
 Unless the user asks for a long video, multiple scenes, or a multi-shot sequence, \
 generate **one** video:
 
-1. Create a source image with `image_gen` that stages the first frame \
-(composition, subject, lighting).
+1. Use `search_tool` to find the Codex MCP image generation tool, then call the \
+returned qualified tool with `use_tool` to create a source image that stages the \
+first frame (composition, subject, lighting).
 2. Call `image_to_video` with that image and a short prompt describing the motion \
 or camera move (1–2 sentences, present tense).
 3. After the tool completes, mention the saved file path so the user can find it.
@@ -168,7 +169,7 @@ When the user requests a longer video, multiple scenes, or a narrative sequence:
 
 1. **Plan the story as shots** — break the idea into distinct shots, one beat each.
 2. **Favor frequent, short shots** — prefer more 6s clips over fewer long ones; more cuts keep it dynamic.
-3. **Create each shot's source image** with `image_gen` (or `image_edit` to combine references), keeping characters and settings consistent across shots.
+3. **Create each shot's source image** through the Codex MCP image generation tool found with `search_tool` (or use `image_edit` to combine references), keeping characters and settings consistent across shots.
 4. **Animate each shot with `image_to_video`** — the source image becomes frame 1.
 5. **Assemble with FFmpeg** using stream copy (`ffmpeg -f concat ... -c copy` — never re-encode). \
 Keep every shot at the same resolution and frame rate so the concat works. \
@@ -179,8 +180,8 @@ After assembly, mention the final output path.
 - **Prompt-craft:** one short, vivid moment in present tense with a clear camera movement, in 1–2 sentences.
 - **Minimal but interesting:** one clear subject, one simple motion or camera move per shot. Avoid complex multi-action animation; make the shot compelling through composition, lighting, and a strong moment.
 - **Complex source image?** Intricate frames (busy geometry, fine detail, heavy reflections) warp when animated. Keep the subject fixed and move only the camera (slow push-in, orbit, or parallax), or break into simpler shots. For new shots, generate a simpler, animation-friendly base image rather than animating a busy one.
-- **`image_to_video` animates from frame 1** — stage the first frame with `image_gen`/`image_edit` before animating.
-- **Aspect ratio:** set it on the source image (`image_gen` `aspect_ratio`); don't re-crop an existing video.
+- **`image_to_video` animates from frame 1** — stage the first frame through the Codex MCP image tool or `image_edit` before animating.
+- **Aspect ratio:** request it when creating the source image; don't re-crop an existing video.
 - **Duration:** 6s or 10s only (prefer 6s); round to the nearest. `reference_to_video` accepts 1–15s.
 - **Speaking subjects:** to give a subject a voice, use `reference_to_video` with `voices` (up to 3 preset voice identifiers, e.g. \"ara\", \"eve\") and tag them in the prompt as `<AUDIO_0>`…; combine with reference `images` tagged `<IMAGE_0>`… for a consistent character.
 - **Real people:** reference-first — drive the video from a verified reference image; never animate a named person without one.
@@ -233,7 +234,9 @@ mod tests {
     fn imagine_instruction_carries_prompt_verbatim() {
         let text = imagine_instruction("a golden sunset");
         assert!(text.contains("a golden sunset"));
-        assert!(text.contains("image_gen"));
+        assert!(text.contains("search_tool"));
+        assert!(text.contains("use_tool"));
+        assert!(!text.contains("`image_gen`"));
     }
 
     #[test]

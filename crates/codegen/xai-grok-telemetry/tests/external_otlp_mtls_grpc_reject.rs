@@ -3,6 +3,7 @@ mod otlp_collector;
 use otlp_collector as col;
 
 #[test]
+#[ignore = "network telemetry is disabled in this fork"]
 fn external_stream_grpc_mtls_fails_without_client_identity() {
     col::init_test_tracing();
 

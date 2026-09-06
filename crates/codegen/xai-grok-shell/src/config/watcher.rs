@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use notify::RecursiveMode;
+use notify::{RecursiveMode, Watcher};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer_opt};
 use tokio::sync::mpsc;
 
@@ -85,6 +86,9 @@ pub enum ConfigChangeEvent {
     /// The reload must broadcast through the legacy unit [`super::reloader::ConfigUpdate::McpServersChanged`] arm.
     /// Routing it through `ProjectMcpServersChanged { cwd: $HOME }` would silently skip sessions whose cwd doesn't sit under `$HOME`.
     HomeClaudeJsonChanged,
+    /// The user's home-level `~/.codex/config.toml` changed.
+    /// Codex MCP records apply to every session, so reload them globally.
+    HomeCodexConfigChanged,
 }
 
 /// Watches `~/.grok/` for `auth.json`, `config.toml`, and `models_cache.json`
@@ -104,6 +108,10 @@ pub enum ConfigChangeEvent {
 /// Use [`Self::watch_path`] to register additional cwds at runtime when new sessions open in previously-unwatched directories.
 pub struct ConfigFileWatcher {
     debouncer: Debouncer<AccessFilteredWatcher>,
+    /// Watches `$HOME` only until a missing `~/.codex` directory appears.
+    _codex_parent_watcher: Option<AccessFilteredWatcher>,
+    /// Owns the Codex directory watcher installed after late directory creation.
+    _late_codex_watcher: Arc<Mutex<Option<AccessFilteredWatcher>>>,
     /// Project cwds currently registered (via [`Self::start`]'s `cwd` argument or [`Self::watch_path`]).
     /// Tracked so that [`Self::watch_path`] is idempotent at our layer instead of relying on `notify`'s internal de-dup.
     /// Also lets [`Self::unwatch_path`] drop the OS watches for a cwd no longer needed.
@@ -136,6 +144,13 @@ impl ConfigFileWatcher {
         // The per-event side is canonicalized in `parent_is_dir`
         let user_home_buf: Option<PathBuf> =
             xai_dirs::home_dir().map(|h| dunce::canonicalize(&h).unwrap_or(h));
+        let codex_home_buf = user_home_buf.as_ref().map(|home| {
+            let path = home.join(".codex");
+            dunce::canonicalize(&path).unwrap_or(path)
+        });
+        let codex_watch_dir = codex_home_buf.clone();
+        let user_home_watch_dir = user_home_buf.clone();
+        let late_codex_tx = tx.clone();
 
         let mut debouncer = new_filtered_debouncer(debounce, move |res: DebounceEventResult| {
             let Ok(events) = res else { return };
@@ -143,36 +158,12 @@ impl ConfigFileWatcher {
             let mut batch_events: Vec<ConfigChangeEvent> = Vec::new();
             for event in events {
                 let path = &event.path;
-                let name = path.file_name().and_then(|n| n.to_str());
-                let parent = path.parent();
-
-                let change = match name {
-                    Some("auth.json") if parent == Some(grok_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::AuthChanged)
-                    }
-                    Some("config.toml") if parent == Some(grok_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::GlobalConfigChanged)
-                    }
-                    Some("models_cache.json") if parent == Some(grok_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::ModelsCacheChanged)
-                    }
-                    Some("config.toml") => {
-                        Some(ConfigChangeEvent::ProjectConfigChanged { path: path.clone() })
-                    }
-                    // `~/.claude.json` routes through the dedicated home-level variant so the reloader can broadcast
-                    // Project-level `<cwd>/.claude.json` (and any `.mcp.json`) continues to be a per-cwd reload
-                    Some(".claude.json")
-                        if user_home_buf
-                            .as_deref()
-                            .is_some_and(|h| parent_is_dir(parent, h)) =>
-                    {
-                        Some(ConfigChangeEvent::HomeClaudeJsonChanged)
-                    }
-                    Some(".mcp.json") | Some(".claude.json") => {
-                        Some(ConfigChangeEvent::McpConfigChanged { path: path.clone() })
-                    }
-                    _ => None,
-                };
+                let change = config_change_for_path(
+                    path,
+                    &grok_home_buf,
+                    user_home_buf.as_deref(),
+                    codex_home_buf.as_deref(),
+                );
 
                 if let Some(evt) = change
                     && !batch_events.contains(&evt)
@@ -198,6 +189,21 @@ impl ConfigFileWatcher {
                 )
             })
             .ok()?;
+
+        if let Some(codex_home) = codex_watch_dir.as_deref()
+            && codex_home.is_dir()
+            && let Err(e) = debouncer
+                .watcher()
+                .watch(codex_home, RecursiveMode::NonRecursive)
+        {
+            log_watch_error(&e, "failed to watch Codex config directory");
+        }
+
+        let (codex_parent_watcher, late_codex_watcher) = install_late_codex_watcher(
+            user_home_watch_dir.as_deref(),
+            codex_watch_dir.as_deref(),
+            late_codex_tx,
+        );
 
         for p in extra_paths {
             if let Some(parent) = p.parent() {
@@ -232,6 +238,8 @@ impl ConfigFileWatcher {
         Some((
             Self {
                 debouncer,
+                _codex_parent_watcher: codex_parent_watcher,
+                _late_codex_watcher: late_codex_watcher,
                 watched_cwds,
             },
             rx,
@@ -271,6 +279,102 @@ impl ConfigFileWatcher {
             return;
         }
         unwatch_cwd_dirs(&mut self.debouncer, cwd);
+    }
+}
+
+fn install_late_codex_watcher(
+    user_home: Option<&Path>,
+    codex_home: Option<&Path>,
+    event_tx: mpsc::UnboundedSender<ConfigChangeEvent>,
+) -> (
+    Option<AccessFilteredWatcher>,
+    Arc<Mutex<Option<AccessFilteredWatcher>>>,
+) {
+    let late_watcher = Arc::new(Mutex::new(None));
+    let (Some(user_home), Some(codex_home)) = (user_home, codex_home) else {
+        return (None, late_watcher);
+    };
+    if codex_home.is_dir() {
+        return (None, late_watcher);
+    }
+
+    let slot = Arc::clone(&late_watcher);
+    let codex_home = codex_home.to_path_buf();
+    let Ok(mut parent_watcher) = AccessFilteredWatcher::new(
+        move |result: notify::Result<notify::Event>| {
+            if result.is_err() || !codex_home.is_dir() {
+                return;
+            }
+            let mut guard = slot.lock().unwrap_or_else(|error| error.into_inner());
+            if guard.is_some() {
+                return;
+            }
+            let child_tx = event_tx.clone();
+            let child_home = codex_home.clone();
+            let Ok(mut watcher) = AccessFilteredWatcher::new(
+                move |result: notify::Result<notify::Event>| {
+                    let Ok(event) = result else { return };
+                    if event.paths.iter().any(|path| {
+                        path.file_name().and_then(|name| name.to_str()) == Some("config.toml")
+                            && parent_is_dir(path.parent(), &child_home)
+                    }) {
+                        let _ = child_tx.send(ConfigChangeEvent::HomeCodexConfigChanged);
+                    }
+                },
+                notify::Config::default(),
+            ) else {
+                return;
+            };
+            if watcher
+                .watch(&codex_home, RecursiveMode::NonRecursive)
+                .is_ok()
+            {
+                *guard = Some(watcher);
+                let _ = event_tx.send(ConfigChangeEvent::HomeCodexConfigChanged);
+            }
+        },
+        notify::Config::default(),
+    ) else {
+        return (None, late_watcher);
+    };
+    if parent_watcher
+        .watch(user_home, RecursiveMode::NonRecursive)
+        .is_err()
+    {
+        return (None, late_watcher);
+    }
+    (Some(parent_watcher), late_watcher)
+}
+
+fn config_change_for_path(
+    path: &Path,
+    grok_home: &Path,
+    user_home: Option<&Path>,
+    codex_home: Option<&Path>,
+) -> Option<ConfigChangeEvent> {
+    let name = path.file_name().and_then(|name| name.to_str());
+    let parent = path.parent();
+    match name {
+        Some("auth.json") if parent == Some(grok_home) => Some(ConfigChangeEvent::AuthChanged),
+        Some("config.toml") if parent == Some(grok_home) => {
+            Some(ConfigChangeEvent::GlobalConfigChanged)
+        }
+        Some("models_cache.json") if parent == Some(grok_home) => {
+            Some(ConfigChangeEvent::ModelsCacheChanged)
+        }
+        Some("config.toml") if codex_home.is_some_and(|home| parent_is_dir(parent, home)) => {
+            Some(ConfigChangeEvent::HomeCodexConfigChanged)
+        }
+        Some("config.toml") => Some(ConfigChangeEvent::ProjectConfigChanged {
+            path: path.to_path_buf(),
+        }),
+        Some(".claude.json") if user_home.is_some_and(|home| parent_is_dir(parent, home)) => {
+            Some(ConfigChangeEvent::HomeClaudeJsonChanged)
+        }
+        Some(".mcp.json") | Some(".claude.json") => Some(ConfigChangeEvent::McpConfigChanged {
+            path: path.to_path_buf(),
+        }),
+        _ => None,
     }
 }
 
@@ -369,7 +473,7 @@ fn discovery_change_for_path(path: &Path) -> Option<DiscoveryChange> {
 }
 
 /// Known vendor config root basenames; kept in sync with `collect_skill_config_dirs`.
-const VENDOR_CONFIG_ROOT_NAMES: &[&str] = &[".grok", ".agents", ".claude", ".cursor"];
+const VENDOR_CONFIG_ROOT_NAMES: &[&str] = &[".grok", ".agents", ".claude", ".cursor", ".codex"];
 
 /// Vendor roots (by name or `grok_home`) must use scoped watches; they can contain large non-skill trees (`worktrees/`, etc.).
 fn is_vendor_config_root(dir: &Path, grok_home: &Path) -> bool {
@@ -741,6 +845,7 @@ mod tests {
         assert!(is_vendor_config_root(&home.join(".claude"), &grok_home));
         assert!(is_vendor_config_root(&home.join(".cursor"), &grok_home));
         assert!(is_vendor_config_root(&home.join(".agents"), &grok_home));
+        assert!(is_vendor_config_root(&home.join(".codex"), &grok_home));
         assert!(is_vendor_config_root(
             &home.join("repo").join(".grok"),
             &grok_home
@@ -759,6 +864,54 @@ mod tests {
 
         let custom_home = home.join("custom-grok-home");
         assert!(is_vendor_config_root(&custom_home, &custom_home));
+    }
+
+    #[test]
+    fn codex_config_change_is_home_scoped() {
+        let home = Path::new("/home/tester");
+        let grok_home = home.join(".grok");
+        let codex_home = home.join(".codex");
+        assert_eq!(
+            config_change_for_path(
+                &codex_home.join("config.toml"),
+                &grok_home,
+                Some(home),
+                Some(&codex_home),
+            ),
+            Some(ConfigChangeEvent::HomeCodexConfigChanged)
+        );
+    }
+
+    #[test]
+    fn late_codex_directory_creation_attaches_config_watch() {
+        let home = TempDir::new().unwrap();
+        let home_path = dunce::canonicalize(home.path()).unwrap();
+        let codex_home = home_path.join(".codex");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (parent_watcher, late_watcher) =
+            install_late_codex_watcher(Some(&home_path), Some(&codex_home), tx);
+        let Some(_parent_watcher) = parent_watcher else {
+            return;
+        };
+
+        fs::create_dir(&codex_home).unwrap();
+        wait_ms(300);
+        while rx.try_recv().is_ok() {}
+        assert!(
+            late_watcher
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some(),
+            "creating ~/.codex must attach its config watcher"
+        );
+
+        fs::write(codex_home.join("config.toml"), "[mcp_servers]").unwrap();
+        wait_ms(300);
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|event| event == ConfigChangeEvent::HomeCodexConfigChanged),
+            "editing a late-created Codex config must trigger reload"
+        );
     }
 
     #[test]
@@ -933,7 +1086,7 @@ mod tests {
                 .into_iter()
                 .chain(vendor_skill_refresh_dirs(&project_grok))
                 .collect();
-        for name in [".agents", ".cursor"] {
+        for name in [".agents", ".cursor", ".codex"] {
             let root = project.join(name);
             expected_refresh.push((root.clone(), RecursiveMode::NonRecursive));
             expected_refresh.extend(vendor_skill_refresh_dirs(&root));
@@ -1057,7 +1210,7 @@ mod tests {
         assert_eq!(plan.project_parent_watch.as_deref(), Some(project));
 
         let mut expected = vendor_skill_refresh_dirs(&project_claude).to_vec();
-        for name in [".grok", ".agents", ".cursor"] {
+        for name in [".grok", ".agents", ".cursor", ".codex"] {
             let root = project.join(name);
             expected.push((root.clone(), RecursiveMode::NonRecursive));
             expected.extend(vendor_skill_refresh_dirs(&root));

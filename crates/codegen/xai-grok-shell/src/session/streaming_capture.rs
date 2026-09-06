@@ -138,6 +138,13 @@ impl StreamingTurnCapture {
             && self.empty_reason.is_none()
     }
 
+    /// True when the active inference request emitted answer text or started a tool call.
+    /// Reasoning alone does not count because a replacement attempt can still produce the
+    /// missing answer without concatenating two answers or repeating a side effect.
+    pub(crate) fn current_generation_has_visible_output(&self) -> bool {
+        !self.response_text.is_empty() || self.phase == CapturePhase::ToolCall
+    }
+
     /// Reset the capture in-place and stamp the new turn's identifiers.
     /// Called from `StreamStarted` only when the prompt id changes (or from the first chunk if `StreamStarted` was dropped).
     /// A same-turn restart (a doomloop's next reasoning-only generation) thus never wipes the segments already accumulated for this turn.

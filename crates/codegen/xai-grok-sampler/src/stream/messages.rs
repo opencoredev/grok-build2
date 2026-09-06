@@ -45,6 +45,50 @@ struct BlockState {
     signature: String,
 }
 
+fn fold_block_state(
+    state: BlockState,
+    assistant_text: &mut String,
+    assistant_reasoning: &mut Option<rs::ReasoningItem>,
+    assistant_tool_calls: &mut Vec<ToolCall>,
+) {
+    match state.block_type {
+        BlockType::Text => {
+            if !state.text_acc.is_empty() {
+                if !assistant_text.is_empty() {
+                    assistant_text.push('\n');
+                }
+                assistant_text.push_str(&state.text_acc);
+            }
+        }
+        BlockType::Thinking => {
+            if !state.thinking_acc.is_empty() || !state.signature.is_empty() {
+                let summary = if state.thinking_acc.is_empty() {
+                    vec![]
+                } else {
+                    vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                        text: state.thinking_acc,
+                    })]
+                };
+                let encrypted_content = (!state.signature.is_empty()).then_some(state.signature);
+                *assistant_reasoning = Some(rs::ReasoningItem {
+                    id: String::new(),
+                    summary,
+                    content: None,
+                    encrypted_content,
+                    status: None,
+                });
+            }
+        }
+        BlockType::ToolUse => {
+            assistant_tool_calls.push(ToolCall {
+                id: std::sync::Arc::<str>::from(state.tool_id),
+                name: state.tool_name,
+                arguments: std::sync::Arc::<str>::from(state.args_acc),
+            });
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockType {
     Text,
@@ -55,6 +99,7 @@ enum BlockType {
 /// Transform a raw Anthropic Messages API stream into a stream of [`SamplingEvent`]s.
 ///
 /// Yields exactly one terminal event ([`SamplingEvent::Completed`] or [`SamplingEvent::Failed`]) per request.
+/// An idle timeout after usable output completes with that partial output. A timeout before output fails.
 /// Server-side `Error` events translate to `SamplingError::Api { status: 500, .. }`.
 /// The actor's retry loop treats them as retryable transport-level errors.
 pub fn stream_messages<'a>(
@@ -110,6 +155,8 @@ pub fn stream_messages<'a>(
         // Index counters
         let mut chunk_index: u64 = 0;
         let mut message_chunk_count: u64 = 0;
+        let mut has_usable_output = false;
+        let mut timed_out_after_output = false;
         let mut first_token_emitted = false;
         let mut last_content_chunk_at = Instant::now();
 
@@ -123,6 +170,10 @@ pub fn stream_messages<'a>(
                 Ok(Some(event_result)) => event_result,
                 Ok(None) => break,
                 Err(_elapsed) => {
+                    if has_usable_output {
+                        timed_out_after_output = true;
+                        break;
+                    }
                     let err = SamplingError::IdleTimeout {
                         elapsed_secs: idle_timeout.as_secs(),
                     };
@@ -149,7 +200,11 @@ pub fn stream_messages<'a>(
 
             match event {
                 MessageStreamEvent::MessageStart { message } => {
-                    final_message_id = Some(message.id.clone());
+                    // Some Messages-compatible providers reuse short IDs such as `msg_1`
+                    // across turns. Clients key assistant records by this value, so scope it
+                    // to Grok's per-request ID before it leaves the sampler.
+                    let message_id = format!("{}:{}", request_id.as_str(), message.id);
+                    final_message_id = Some(message_id.clone());
                     final_model = Some(message.model.clone());
                     final_input_tokens = message.usage.input_tokens;
                     final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
@@ -158,7 +213,7 @@ pub fn stream_messages<'a>(
                     // Partial-mode framing then emits them on the real `message_start` instead of a synthesized placeholder
                     yield SamplingEvent::ResponseStarted {
                         request_id: request_id.clone(),
-                        message_id: message.id,
+                        message_id,
                         model: message.model,
                         input_tokens: u64::from(message.usage.input_tokens),
                         cache_read_input_tokens: u64::from(
@@ -218,6 +273,17 @@ pub fn stream_messages<'a>(
                         }
                     }
                     ContentBlock::ToolUse { id, name, .. } => {
+                        if id.trim().is_empty() || name.trim().is_empty() {
+                            let err = SamplingError::EventStreamError(
+                                "provider started a tool call without a non-empty id and name"
+                                    .to_string(),
+                            );
+                            yield SamplingEvent::Failed {
+                                request_id: request_id.clone(),
+                                error: SamplingErrorInfo::from(&err),
+                            };
+                            return;
+                        }
                         let tool_index = next_tool_index;
                         next_tool_index += 1;
                         block_to_tool_index.insert(index, tool_index);
@@ -316,59 +382,19 @@ pub fn stream_messages<'a>(
 
                 MessageStreamEvent::ContentBlockStop { index } => {
                     if let Some(state) = blocks.remove(&index) {
-                        match state.block_type {
-                            BlockType::Text => {
-                                if !state.text_acc.is_empty() {
-                                    if !assistant_text.is_empty() {
-                                        assistant_text.push('\n');
-                                    }
-                                    assistant_text.push_str(&state.text_acc);
-                                }
-                            }
-                            BlockType::Thinking => {
-                                // Yield the encrypted signature at the thinking block's stop
-                                // Partial-mode framing can then emit `signature_delta` before its `content_block_stop`
-                                if !state.signature.is_empty() {
-                                    yield SamplingEvent::ReasoningCompleted {
-                                        request_id: request_id.clone(),
-                                        signature: state.signature.clone(),
-                                    };
-                                }
-                                if !state.thinking_acc.is_empty() || !state.signature.is_empty() {
-                                    // Anthropic Messages API `Thinking` blocks uniquely carry an encrypted `signature` distinct from the text
-                                    // Either field may be empty
-                                    // Build directly rather than via `synthesized_reasoning_item` since the helper assumes a non-empty summary
-                                    let summary = if state.thinking_acc.is_empty() {
-                                        vec![]
-                                    } else {
-                                        vec![rs::SummaryPart::SummaryText(
-                                            rs::SummaryTextContent {
-                                                text: state.thinking_acc,
-                                            },
-                                        )]
-                                    };
-                                    let encrypted_content = if state.signature.is_empty() {
-                                        None
-                                    } else {
-                                        Some(state.signature)
-                                    };
-                                    assistant_reasoning = Some(rs::ReasoningItem {
-                                        id: String::new(),
-                                        summary,
-                                        content: None,
-                                        encrypted_content,
-                                        status: None,
-                                    });
-                                }
-                            }
-                            BlockType::ToolUse => {
-                                assistant_tool_calls.push(ToolCall {
-                                    id: std::sync::Arc::<str>::from(state.tool_id),
-                                    name: state.tool_name,
-                                    arguments: std::sync::Arc::<str>::from(state.args_acc),
-                                });
-                            }
+                        // Yield the encrypted signature at the thinking block's stop.
+                        if state.block_type == BlockType::Thinking && !state.signature.is_empty() {
+                            yield SamplingEvent::ReasoningCompleted {
+                                request_id: request_id.clone(),
+                                signature: state.signature.clone(),
+                            };
                         }
+                        fold_block_state(
+                            state,
+                            &mut assistant_text,
+                            &mut assistant_reasoning,
+                            &mut assistant_tool_calls,
+                        );
                     }
                 }
 
@@ -458,9 +484,19 @@ pub fn stream_messages<'a>(
                 }
             }
 
+            has_usable_output = !assistant_text.is_empty()
+                || !assistant_tool_calls.is_empty()
+                || blocks.values().any(|state| {
+                    state.block_type == BlockType::Text && !state.text_acc.is_empty()
+                });
+
             if event_has_content {
                 last_content_chunk_at = Instant::now();
             } else if last_content_chunk_at.elapsed() > idle_timeout {
+                if has_usable_output {
+                    timed_out_after_output = true;
+                    break;
+                }
                 let err = SamplingError::IdleTimeout {
                     elapsed_secs: idle_timeout.as_secs(),
                 };
@@ -469,6 +505,42 @@ pub fn stream_messages<'a>(
                     error: SamplingErrorInfo::from(&err),
                 };
                 return;
+            }
+        }
+
+        if blocks
+            .values()
+            .any(|state| state.block_type == BlockType::ToolUse)
+        {
+            let err = if timed_out_after_output {
+                SamplingError::IdleTimeout {
+                    elapsed_secs: idle_timeout.as_secs(),
+                }
+            } else {
+                SamplingError::EventStreamError(
+                    "provider stream ended before tool call completed".to_string(),
+                )
+            };
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
+
+        if timed_out_after_output {
+            for (_, state) in blocks {
+                if state.block_type != BlockType::ToolUse {
+                    fold_block_state(
+                        state,
+                        &mut assistant_text,
+                        &mut assistant_reasoning,
+                        &mut assistant_tool_calls,
+                    );
+                }
+            }
+            if final_stop_reason.is_none() {
+                final_stop_reason = Some(StopReason::Stop);
             }
         }
 

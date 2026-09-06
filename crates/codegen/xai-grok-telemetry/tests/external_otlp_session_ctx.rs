@@ -11,6 +11,7 @@ use otlp_collector as col;
 use xai_grok_telemetry::external;
 
 #[test]
+#[ignore = "network telemetry is disabled in this fork"]
 fn ambient_ctx_injects_session_turn_and_prompt_id() {
     let collected = col::Collected::default();
     let endpoint = col::start_collector(collected.clone());

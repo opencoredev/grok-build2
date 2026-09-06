@@ -8,17 +8,17 @@
 use super::support::*;
 use super::*;
 use agent_client_protocol as acp;
-use xai_grok_tools::implementations::grok_build::image_gen::ImageGenTool;
+use xai_grok_tools::implementations::grok_build::image_edit::ImageEditTool;
 use xai_grok_tools::media_gen_limits::DEFAULT_MAX_PARALLEL_IMAGE_GEN;
 use xai_grok_tools::registry::types::ToolConfig;
 
-fn image_gen_call(id: &str) -> ToolCallResponse {
+fn image_edit_call(id: &str) -> ToolCallResponse {
     ToolCallResponse {
         id: id.to_string(),
         kind: "function".to_string(),
         function: crate::sampling::types::ToolCallFunction::new(
-            "image_gen",
-            r#"{"prompt":"media-gen-batch-limit test"}"#,
+            "image_edit",
+            r#"{"prompt":"media-gen-batch-limit test","image":"/tmp/reference.png"}"#,
         ),
     }
 }
@@ -89,19 +89,19 @@ async fn first_k_tail_rejects_get_pending_then_failed() {
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let (mut actor, mut event_rx) =
                 create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
-            // With max_image at 0 the first-K gate admits no image_gen calls, so ImageGen never runs
+            // With max_image at 0 the first-K gate admits no image_edit calls, so ImageEdit never runs.
             std::sync::Arc::get_mut(&mut actor.rebuild_spec)
                 .expect("test rebuild_spec is uniquely owned")
                 .media_gen_batch_limits
                 .max_image = 0;
             *actor.agent.borrow_mut() = test_agent_with_tools(vec![
-                ToolConfig::for_tool::<ImageGenTool>(),
+                ToolConfig::for_tool::<ImageEditTool>(),
                 ToolConfig::from_id("GrokBuild:read_file"),
             ])
             .await;
 
             let mut batch: Vec<ToolCallResponse> = (0..3)
-                .map(|i| image_gen_call(&format!("img_{i}")))
+                .map(|i| image_edit_call(&format!("img_{i}")))
                 .collect();
             batch.push(read_file_call("read_sibling"));
 
@@ -118,7 +118,7 @@ async fn first_k_tail_rejects_get_pending_then_failed() {
                 let text = tool_result_text(&actor, &id).await;
                 assert!(
                     text.contains("at most")
-                        && text.contains("image_gen")
+                        && text.contains("image_edit")
                         && text.contains("This extra call was skipped"),
                     "reject text for {id}: {text}"
                 );
@@ -167,7 +167,7 @@ async fn over_cap_report_classifies_modest_vs_egregious() {
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             *actor.agent.borrow_mut() = test_agent_with_tools(vec![
-                ToolConfig::for_tool::<ImageGenTool>(),
+                ToolConfig::for_tool::<ImageEditTool>(),
                 ToolConfig::from_id("GrokBuild:read_file"),
             ])
             .await;
@@ -176,13 +176,13 @@ async fn over_cap_report_classifies_modest_vs_egregious() {
             let calls: Vec<xai_grok_sampling_types::ToolCall> = (0..over)
                 .map(|i| xai_grok_sampling_types::ToolCall {
                     id: format!("img_{i}").into(),
-                    name: "image_gen".into(),
+                    name: "image_edit".into(),
                     arguments: "{}".into(),
                 })
                 .collect();
             let report = actor.media_gen_over_cap(&calls);
             assert_eq!(report.len(), 1);
-            assert_eq!(report[0].name, "image_gen");
+            assert_eq!(report[0].name, "image_edit");
             assert_eq!(report[0].total, over);
             assert_eq!(report[0].max, DEFAULT_MAX_PARALLEL_IMAGE_GEN);
             assert!(
@@ -194,7 +194,7 @@ async fn over_cap_report_classifies_modest_vs_egregious() {
                 * 2)
                 .map(|i| xai_grok_sampling_types::ToolCall {
                     id: format!("spam_{i}").into(),
-                    name: "image_gen".into(),
+                    name: "image_edit".into(),
                     arguments: "{}".into(),
                 })
                 .collect();
@@ -205,7 +205,7 @@ async fn over_cap_report_classifies_modest_vs_egregious() {
             let under: Vec<xai_grok_sampling_types::ToolCall> = (0..DEFAULT_MAX_PARALLEL_IMAGE_GEN)
                 .map(|i| xai_grok_sampling_types::ToolCall {
                     id: format!("ok_{i}").into(),
-                    name: "image_gen".into(),
+                    name: "image_edit".into(),
                     arguments: "{}".into(),
                 })
                 .collect();

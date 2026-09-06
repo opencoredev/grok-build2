@@ -275,10 +275,8 @@ pub struct SessionContext {
     /// passed to every session. Same pattern as `fs` and `backend`.
     /// When `Some`, inserted into `Resources` so `LspTool` can use it.
     pub lsp: Option<std::sync::Arc<dyn crate::implementations::lsp::LspBackend>>,
-    /// Optional image generation configuration. When `Enabled`, an `ImageGenClient`
-    /// is created and injected into `Resources` so the `image_gen` tool can
-    /// call the xAI Imagine API. When `Disabled` (default), the tool is not
-    /// registered and image generation is unavailable.
+    /// Optional native image configuration. When `Enabled`, an `ImageGenClient`
+    /// is created and injected into `Resources` for native image editing.
     pub image_gen_config: crate::implementations::grok_build::image_gen::ImageGenConfig,
     /// Optional video generation configuration. When `Enabled`, a `VideoGenClient`
     /// is created and injected into `Resources` so the `video_gen` tool can
@@ -702,7 +700,6 @@ impl ToolRegistryBuilder {
         b.register::<grok_build::WebSearchTool>();
         b.register_with_params::<grok_build::WebFetchTool, grok_build::web_fetch::WebFetchParams>();
         b.register::<grok_build::LspTool>();
-        b.register::<grok_build::ImageGenTool>();
         b.register::<grok_build::ImageEditTool>();
         b.register::<grok_build::ImageToVideoTool>();
         b.register::<grok_build::ReferenceToVideoTool>();
@@ -2239,6 +2236,19 @@ mod tests {
             system_reminder_tag: crate::reminders::DEFAULT_REMINDER_TAG,
         }
     }
+    #[tokio::test]
+    async fn native_image_gen_is_not_registered() {
+        let tmp = TempDir::new().unwrap();
+        let config = ToolServerConfig {
+            tools: vec![ToolConfig::from_id("GrokBuild:image_gen")],
+            behavior_preset: None,
+        };
+        assert!(
+            ToolRegistryBuilder::new()
+                .finalize(config, test_session_context(&tmp))
+                .is_err()
+        );
+    }
     /// Regression test: `kind_params` must merge input params from ALL tools
     /// that share a `ToolKind`, not just the first one.
     ///
@@ -2370,9 +2380,8 @@ mod tests {
     #[tokio::test]
     async fn full_toolset_descriptions_render_cleanly() {
         use crate::implementations::grok_build::{
-            IMAGE_GEN_TOOL_NAME, IMAGE_TO_VIDEO_TOOL_NAME, REFERENCE_TO_VIDEO_TOOL_NAME,
-            SCHEDULER_CREATE_TOOL_NAME, SCHEDULER_DELETE_TOOL_NAME,
-            SEND_SUBAGENT_MESSAGE_TOOL_NAME,
+            IMAGE_TO_VIDEO_TOOL_NAME, REFERENCE_TO_VIDEO_TOOL_NAME, SCHEDULER_CREATE_TOOL_NAME,
+            SCHEDULER_DELETE_TOOL_NAME, SEND_SUBAGENT_MESSAGE_TOOL_NAME,
         };
         let builder = ToolRegistryBuilder::new();
         let config = ToolServerConfig {
@@ -2393,7 +2402,6 @@ mod tests {
                 "web_search",
                 "web_fetch",
                 "lsp",
-                IMAGE_GEN_TOOL_NAME,
                 IMAGE_TO_VIDEO_TOOL_NAME,
                 REFERENCE_TO_VIDEO_TOOL_NAME,
                 "monitor",

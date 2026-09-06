@@ -162,7 +162,7 @@ async fn create_test_actor(
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
         },
         session_start: std::time::Instant::now(),
-        inference_idle_timeout: std::time::Duration::from_secs(300),
+        inference_idle_timeout: std::cell::Cell::new(std::time::Duration::from_secs(300)),
         max_retries: 3,
         rate_limit_waits: crate::session::acp_session::RateLimitWaitConfig::default(),
         max_turns: None,
@@ -842,6 +842,7 @@ async fn family_switch_compacts_lossy_with_new_model() {
                     true,
                     false,
                     true,
+                    "New Model".to_string(),
                     85,
                 )
                 .await

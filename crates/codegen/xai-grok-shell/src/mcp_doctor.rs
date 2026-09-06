@@ -124,6 +124,7 @@ fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServe
     );
 
     let mut config_count = 0usize;
+    let mut codex_count = 0usize;
     let mut claude_count = 0usize;
     let mut mcp_json_count = 0usize;
     let mut plugin_counts: HashMap<String, usize> = HashMap::new();
@@ -131,6 +132,7 @@ fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServe
     for (server, source) in sourced {
         match &source {
             ConfigSource::ConfigToml { .. } | ConfigSource::Project { .. } => config_count += 1,
+            ConfigSource::CodexConfig { .. } => codex_count += 1,
             ConfigSource::ClaudeJson { .. } => claude_count += 1,
             ConfigSource::McpJson { .. } => mcp_json_count += 1,
             ConfigSource::Plugin { plugin_name, .. } => {
@@ -166,6 +168,20 @@ fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServe
                 status: ConfigSourceState::Found { server_count: 0 },
             });
         }
+    }
+
+    let codex_config = xai_dirs::home_dir().map(|home| home.join(".codex/config.toml"));
+    if let Some(path) = codex_config {
+        sources.push(ConfigSourceStatus {
+            path: "~/.codex/config.toml".to_string(),
+            status: if path.is_file() {
+                ConfigSourceState::Found {
+                    server_count: codex_count,
+                }
+            } else {
+                ConfigSourceState::NotFound
+            },
+        });
     }
 
     for (name, count) in &plugin_counts {

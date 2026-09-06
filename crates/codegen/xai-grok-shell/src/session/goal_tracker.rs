@@ -412,6 +412,8 @@ pub struct GoalOrchestration {
     pub evaluator_blocker_key: Option<String>,
     #[serde(default)]
     pub evaluator_blocked_streak: u32,
+    #[serde(default)]
+    pub evaluator_failure_streak: u32,
 
     /// Short opaque identifier used to scope per-goal artifact paths owned by the harness.
     /// Today's consumers:
@@ -582,6 +584,10 @@ impl GoalOrchestration {
     fn reset_evaluator_blocker_fields(&mut self) {
         self.evaluator_blocker_key = None;
         self.evaluator_blocked_streak = 0;
+    }
+
+    fn reset_evaluator_failure_fields(&mut self) {
+        self.evaluator_failure_streak = 0;
     }
 }
 
@@ -862,6 +868,7 @@ impl GoalTracker {
             pause_message: None,
             evaluator_blocker_key: None,
             evaluator_blocked_streak: 0,
+            evaluator_failure_streak: 0,
             verifier_id,
             classifier_runs_attempted: 0,
             rounds_since_verify: 0,
@@ -967,6 +974,7 @@ impl GoalTracker {
             o.reset_strategist_fields();
             o.reset_classifier_stall_fields();
             o.reset_evaluator_blocker_fields();
+            o.reset_evaluator_failure_fields();
             self.active_since = Some(Instant::now());
             self.record_event(GoalEvent::GoalResumed, None);
             return true;
@@ -989,6 +997,13 @@ impl GoalTracker {
             o.phase = GoalPhase::Idle;
             o.current_subagent_id = None;
             o.current_subagent_role = None;
+            o.planning_in_flight = false;
+            o.verifying_in_flight = false;
+            o.live_subagent_tokens = 0;
+            o.live_tokens_by_model.clear();
+            o.live_context_pct = 0;
+            o.live_turn_count = 0;
+            o.live_tool_call_count = 0;
             o.pause_message = None;
             // Drop the resumed reject-gatekeeper so any later goal starts verification with a fresh, cold skeptic 0
             o.skeptic0_session_id = None;
@@ -999,6 +1014,7 @@ impl GoalTracker {
             // Terminal transition: reset all strategist state so a recreated/reactivated goal never inherits a stale count or note
             o.reset_strategist_fields();
             o.reset_evaluator_blocker_fields();
+            o.reset_evaluator_failure_fields();
             // The achieved ack points the user at the details file, so it must outlive the scratch-root removal below
             self.rescue_classifier_details();
             self.remove_scratch_root();
@@ -1030,6 +1046,7 @@ impl GoalTracker {
             o.plan_baseline_file = None;
             o.reset_strategist_fields();
             o.reset_evaluator_blocker_fields();
+            o.reset_evaluator_failure_fields();
             // Symmetric with `complete`.
             self.rescue_classifier_details();
             self.remove_scratch_root();
@@ -1132,6 +1149,20 @@ impl GoalTracker {
     pub(crate) fn reset_evaluator_blocker(&mut self) {
         if let Some(o) = self.orchestration.as_mut() {
             o.reset_evaluator_blocker_fields();
+        }
+    }
+
+    pub(crate) fn record_evaluator_failure(&mut self) -> u32 {
+        let Some(o) = self.orchestration.as_mut() else {
+            return 0;
+        };
+        o.evaluator_failure_streak = o.evaluator_failure_streak.saturating_add(1);
+        o.evaluator_failure_streak
+    }
+
+    pub(crate) fn reset_evaluator_failure(&mut self) {
+        if let Some(o) = self.orchestration.as_mut() {
+            o.reset_evaluator_failure_fields();
         }
     }
 
@@ -1256,6 +1287,7 @@ pub(crate) fn make_base_orchestration() -> GoalOrchestration {
         pause_message: None,
         evaluator_blocker_key: None,
         evaluator_blocked_streak: 0,
+        evaluator_failure_streak: 0,
         verifier_id: generate_verifier_id(),
         classifier_runs_attempted: 0,
         rounds_since_verify: 0,

@@ -1280,9 +1280,9 @@ pub(crate) async fn spawn_session_actor(
     let mut sampler_config_initial = sampling_config.clone();
     sampler_config_initial.idle_timeout_secs = Some(inference_idle_timeout_secs);
     let task_output_budgeted = tool_context.task_output_token_budget.is_some();
-    let retry_only_before_output =
+    let workflow_retry_only_before_output =
         task_output_budgeted || tool_context.sampler_retry_only_before_output;
-    if retry_only_before_output {
+    if workflow_retry_only_before_output {
         sampler_config_initial.doom_loop_recovery = None;
     }
     let sampler_retry_policy = xai_grok_sampler::RetryPolicy {
@@ -1291,7 +1291,9 @@ pub(crate) async fn spawn_session_actor(
             is_subagent_spawn,
             subagent_rate_limit_max_attempts,
         ),
-        retry_only_before_output,
+        // ACP streams cannot retract chunks already shown in the client. A retry after output
+        // would append a second answer to the first attempt.
+        retry_only_before_output: true,
     };
     let (sampler_event_tx, sampler_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<xai_grok_sampler::SamplingEvent>();
@@ -1745,7 +1747,9 @@ pub(crate) async fn spawn_session_actor(
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
         },
         session_start: std::time::Instant::now(),
-        inference_idle_timeout: Duration::from_secs(inference_idle_timeout_secs),
+        inference_idle_timeout: std::cell::Cell::new(Duration::from_secs(
+            inference_idle_timeout_secs,
+        )),
         max_turns,
         max_retries: xai_grok_sampler::resolve_max_retries(max_retries),
         rate_limit_waits: RateLimitWaitConfig::with_max_attempts(subagent_rate_limit_max_attempts),

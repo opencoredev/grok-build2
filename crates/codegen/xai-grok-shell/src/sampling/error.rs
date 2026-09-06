@@ -15,7 +15,7 @@ use agent_client_protocol as acp;
 ///
 /// Contract: set only for actual HTTP 429 responses from the sampling client.
 /// Clients derive user-facing text via [`format_rate_limited_user_message`].
-/// The desktop path (`prompt_complete_fields`) reports the stop reason with no detail.
+/// The desktop path (`prompt_complete_fields`) reports the stop reason plus any server detail.
 pub const RATE_LIMITED_ERROR_CODE: i32 = -32003;
 
 /// OAuth / session rate-limit copy (personal plan upgrade path).
@@ -370,7 +370,7 @@ pub fn prompt_usage_from_error(
 }
 
 /// Derive `(stop reason, agent result, error kind)` for the turn-end payloads (`prompt_complete`, durable `TurnCompleted`) from a prompt result.
-/// Rate-limit errors produce `("rate_limit", null)` so the client shows its own upgrade message; other errors produce `("error", <detail>)`.
+/// Rate-limit errors produce `("rate_limit", <detail-or-null>)`: the detail lets a client name the real limited provider (a proxy 429 is not always Grok); a null detail keeps the client's own upgrade message. Other errors produce `("error", <detail>)`.
 /// The error kind ([`error_kind_from_error`]) is `None` for successes and errors without a kind marker.
 pub(crate) fn prompt_complete_fields(
     result: &std::result::Result<acp::StopReason, acp::Error>,
@@ -385,7 +385,13 @@ pub(crate) fn prompt_complete_fields(
             let is_rate_limit = i32::from(err.code) == RATE_LIMITED_ERROR_CODE;
             let stop = if is_rate_limit { "rate_limit" } else { "error" };
             let result = if is_rate_limit {
-                serde_json::Value::Null
+                // Pass the server detail through when we have one: a proxy/custom-endpoint
+                // 429 may name a non-Grok provider, and hiding it makes the client
+                // misattribute the limit. Null (no detail) keeps the client's own copy.
+                err.data
+                    .as_ref()
+                    .map(error_message_from_data)
+                    .unwrap_or(serde_json::Value::Null)
             } else {
                 err.data
                     .as_ref()
@@ -876,9 +882,26 @@ mod tests {
     }
 
     #[test]
-    fn prompt_complete_fields_rate_limit_omits_detail() {
+    fn prompt_complete_fields_rate_limit_passes_server_detail_through() {
         let err = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited".to_string())
-            .data("Rate limit exceeded");
+            .data("All credentials for model gpt-5.6-sol are cooling down via provider codex");
+        let result = Err(err);
+        let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
+        assert_eq!(stop, serde_json::json!("rate_limit"));
+        assert_eq!(
+            agent_result,
+            serde_json::Value::String(
+                "All credentials for model gpt-5.6-sol are cooling down via provider codex".into()
+            ),
+            "the detail names the real limited provider; hiding it misattributes the limit to Grok"
+        );
+        assert_eq!(error_kind, None);
+    }
+
+    #[test]
+    fn prompt_complete_fields_rate_limit_without_detail_stays_null() {
+        let err = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited".to_string());
+        assert!(err.data.is_none());
         let result = Err(err);
         let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
         assert_eq!(stop, serde_json::json!("rate_limit"));

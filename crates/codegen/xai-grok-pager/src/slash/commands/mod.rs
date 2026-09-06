@@ -43,6 +43,7 @@ pub mod plan;
 pub mod plugin;
 pub mod privacy;
 pub mod queue;
+pub mod reauth;
 pub mod recap;
 pub mod release_notes;
 pub mod remember;
@@ -60,7 +61,6 @@ pub mod timeline;
 pub mod timestamps;
 pub mod toggle_mouse_reporting;
 pub mod transcript;
-pub mod tutorial;
 pub mod usage;
 pub mod view_plan;
 pub mod vim_mode;
@@ -75,7 +75,6 @@ use std::sync::Arc;
 pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
     vec![
         // The rows the dropdown shows before it scrolls.
-        Arc::new(tutorial::TutorialCommand),
         Arc::new(settings_cmd::SettingsCommand),
         Arc::new(dashboard::DashboardCommand),
         Arc::new(workflows::WorkflowsCommand),
@@ -146,6 +145,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(doctor::DoctorCommand),
         Arc::new(import_claude::ImportClaudeCommand),
         Arc::new(login::LoginCommand),
+        Arc::new(reauth::ReauthCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),
         Arc::new(delete::DeleteCommand),

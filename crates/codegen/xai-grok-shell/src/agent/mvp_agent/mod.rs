@@ -1254,7 +1254,7 @@ fn inject_proxy_headers(
     }
     let _ = (alpha_test_key, base_url);
 }
-fn resolve_inference_idle_timeout_secs(
+pub(crate) fn resolve_inference_idle_timeout_secs(
     models: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
     model: &str,
     remote_settings: Option<&crate::util::config::RemoteSettings>,

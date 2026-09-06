@@ -226,13 +226,14 @@ Grok loads MCP server configurations from multiple sources for compatibility:
 | Source | Format | Location | Configurable |
 |--------|--------|----------|-------------|
 | `config.toml` | Native Grok config | `~/.grok/config.toml`, `.grok/config.toml` | Always on |
+| `config.toml` | Codex MCP records only | `~/.codex/config.toml` | `[compat.codex] mcps` |
 | `.claude.json` | Claude Code format | `~/.claude.json` | `[compat.claude] mcps` |
 | `.cursor/mcp.json` | Cursor format | `~/.cursor/mcp.json`, `<project>/.cursor/mcp.json` | `[compat.cursor] mcps` |
 | `.mcp.json` | MCP standard format | Project root (cwd to git root) | Loaded unless you have imported or dismissed the Claude import prompt (the import marker is set) |
 
-All sources are merged in priority order: config.toml > Claude > Cursor > `.mcp.json`. Servers from higher-priority sources take precedence when names conflict.
+All sources are merged in priority order: native Grok TOML > plugins > Codex > Claude > Cursor > `.mcp.json`. Servers from higher-priority sources take precedence when names conflict. The Codex loader reads only `[mcp_servers]` and translates `http_headers` to `headers` in memory. It does not copy the Codex config.
 
-The Claude and Cursor MCP sources are scanned by default. To disable scanning for a specific vendor, set `[compat.<vendor>] mcps = false` in `~/.grok/config.toml` or the corresponding environment variable (`GROK_CURSOR_MCPS_ENABLED`, `GROK_CLAUDE_MCPS_ENABLED`). See [Configuration](05-configuration.md#harness-compatibility) for details. Use `grok inspect` to see which MCP servers were loaded and their vendor origin (`[cursor]`, `[claude]`).
+The Codex, Claude, and Cursor MCP sources are scanned by default. To disable scanning for a specific vendor, set `[compat.<vendor>] mcps = false` in `~/.grok/config.toml`. See [Configuration](05-configuration.md#harness-compatibility) for details. Use `grok inspect` to see which MCP servers loaded and their source.
 
 ---
 

@@ -1,5 +1,31 @@
 use super::*;
 
+const MAX_LIVE_TEXT_CHUNK_CHARS: usize = 96;
+
+fn live_text_chunks(text: &str) -> Vec<&str> {
+    if text.chars().count() <= MAX_LIVE_TEXT_CHUNK_CHARS {
+        return vec![text];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let remaining = &text[start..];
+        let Some((limit, _)) = remaining.char_indices().nth(MAX_LIVE_TEXT_CHUNK_CHARS) else {
+            chunks.push(remaining);
+            break;
+        };
+        let split = remaining[..limit]
+            .char_indices()
+            .rev()
+            .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
+            .unwrap_or(limit);
+        chunks.push(&remaining[..split]);
+        start += split;
+    }
+    chunks
+}
+
 impl SessionActor {
     async fn send_thought_chunk(&self, text: String, chunk_index: u64) {
         self.send_update(
@@ -107,13 +133,15 @@ impl SessionActor {
                     self.emit_event(crate::session::events::Event::PhaseChanged {
                         phase: crate::session::events::Phase::StreamingText,
                     });
-                    self.send_update(
-                        acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                            acp::ContentBlock::Text(acp::TextContent::new(text)),
-                        )),
-                        Some(chunk_index),
-                    )
-                    .await;
+                    for chunk in live_text_chunks(&text) {
+                        self.send_update(
+                            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                                acp::ContentBlock::Text(acp::TextContent::new(chunk.to_owned())),
+                            )),
+                            Some(chunk_index),
+                        )
+                        .await;
+                    }
                 }
                 SamplingChannel::Reasoning => {
                     // Append to the out-of-band trace accumulator; it never enters chat_state
@@ -422,7 +450,18 @@ impl SessionActor {
             // ── Backend-hosted tool progress ─────────────────────
             // These tools are executed server-side by the agentic sampler
             // We emit ACP ToolCall/ToolCallUpdate so the pager can show progress (e.g., "Searching the web…")
-            SamplingEvent::BackendToolCallStarted { call_id, name, .. } => {
+            SamplingEvent::BackendToolCallStarted {
+                request_id,
+                call_id,
+                name,
+            } => {
+                {
+                    let mut cap = self.streaming_turn_capture.lock();
+                    if cap.prompt_id.is_some() {
+                        cap.claim_current_request(request_id.as_str());
+                        cap.phase = CapturePhase::ToolCall;
+                    }
+                }
                 self.signals_handle().record_tool_call(&name);
                 let (title, kind, raw_input) = backend_tool_display(&name);
                 self.send_update(

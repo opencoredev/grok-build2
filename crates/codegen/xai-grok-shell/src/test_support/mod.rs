@@ -2,6 +2,12 @@ pub(crate) mod lsp_runtime;
 
 pub(crate) const TEST_MODEL: &str = "test-model";
 
+// Cargo can unify both JWT backends. Select one before any test parses a token.
+#[ctor::ctor]
+fn install_test_crypto_provider() {
+    let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
+}
+
 /// Permission bits (`mode & 0o777`) of `path`, for owner-only assertions.
 #[cfg(unix)]
 pub(crate) fn unix_mode(path: &std::path::Path) -> u32 {

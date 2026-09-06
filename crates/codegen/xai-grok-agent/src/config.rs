@@ -154,7 +154,6 @@ pub fn workspace_grok_build_toolset() -> ToolServerConfig {
     tools.push((&grok_build::ExitPlanModeTool).into());
     tools.push((&grok_build::AskUserQuestionTool).into());
     tools.push((&grok_build::WebSearchTool).into());
-    tools.push((&grok_build::ImageGenTool).into());
     tools.push((&grok_build::ImageToVideoTool).into());
     tools.push((&grok_build::ReferenceToVideoTool).into());
     tools.push((&grok_build::WebFetchTool).into());
@@ -437,8 +436,7 @@ fn orchestrator_toolset() -> ToolServerConfig {
             // Web tools
             (&grok_build::WebSearchTool).into(),
             (&grok_build::WebFetchTool).into(),
-            // Imagine
-            (&grok_build::ImageGenTool).into(),
+            // Video generation
             (&grok_build::ImageToVideoTool).into(),
             (&grok_build::ReferenceToVideoTool).into(),
             // Memory
@@ -725,7 +723,7 @@ pub struct AgentDefinition {
     #[serde(default = "default_true")]
     pub agents_md: bool,
     /// When true (the default), the AgentBuilder layers session-level optional tools on top of the agent's declared `tool_config`.
-    /// These are memory_search/get, web_search, web_fetch, lsp, image_gen, video_gen, the OpenCode write fallback, and the plan-mode tools.
+    /// These are memory_search/get, web_search, web_fetch, lsp, video_gen, the OpenCode write fallback, and the plan-mode tools.
     ///
     /// Set this to `false` for harnesses that need an exact, minimal toolset.
     /// In the compat harness, for example, every advertised tool must match the model's trained schema.
@@ -1671,6 +1669,21 @@ mod tests {
         let explore = toolset_for_preset("explore").unwrap();
         assert!(explore.tools.len() < plan.tools.len());
         assert!(plan.tools.len() < gb.tools.len());
+    }
+    #[test]
+    fn native_image_gen_is_absent_from_builtin_toolsets() {
+        let native_image_gen_id = ToolConfig::from(&grok_build::ImageGenTool).id;
+        let mut toolsets = native_toolset_presets();
+        toolsets.push(("grok-build-orchestrator", orchestrator_toolset()));
+        for (name, toolset) in toolsets {
+            assert!(
+                toolset
+                    .tools
+                    .iter()
+                    .all(|tool| tool.id != native_image_gen_id),
+                "toolset `{name}` must not advertise native image_gen"
+            );
+        }
     }
     fn grok_computer_exclusive_ids() -> Vec<String> {
         #[allow(unused_mut)]

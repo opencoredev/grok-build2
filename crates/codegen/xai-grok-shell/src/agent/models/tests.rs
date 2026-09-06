@@ -2145,6 +2145,39 @@ fn build_prefetched_map_no_id_falls_back_to_slug() {
 }
 
 #[test]
+fn build_prefetched_map_preserves_environment_key_names() {
+    let mut entries = vec![make_entry_config("custom", Some("Custom"))];
+    entries[0].env_key = Some(config::EnvKeys::new(["OPENAI_API_KEY", "XAI_API_KEY"]));
+
+    let map = build_prefetched_map(entries, None);
+    assert_eq!(
+        map["custom"].env_key.as_ref().map(config::EnvKeys::names),
+        Some(vec!["OPENAI_API_KEY", "XAI_API_KEY"])
+    );
+}
+
+#[test]
+fn custom_endpoint_adds_openai_key_to_cached_models() {
+    let endpoints = config::EndpointsConfig::from_config_value(
+        &toml::from_str(
+            r#"[endpoints]
+models_base_url = "http://127.0.0.1:8317/v1"
+"#,
+        )
+        .unwrap(),
+    );
+    let mut models = make_prefetched(&["cached"]);
+    config::apply_custom_endpoint_env_keys(&endpoints, &mut models);
+    assert_eq!(
+        models["cached"]
+            .env_key
+            .as_ref()
+            .map(config::EnvKeys::names),
+        Some(vec!["OPENAI_API_KEY", "XAI_API_KEY"])
+    );
+}
+
+#[test]
 fn build_prefetched_map_duplicate_id_overwrites() {
     let entries = vec![
         make_entry_config_with_id(Some("grok-build"), "grok-build", Some("First")),

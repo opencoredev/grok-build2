@@ -543,10 +543,11 @@ async fn run_one_attempt(
     let length_policy = request.length_policy;
     match client.api_backend() {
         ApiBackend::ChatCompletions => {
-            let (raw, metadata) = match client.conversation_stream(request).await {
-                Ok(pair) => pair,
-                Err(e) => return AttemptOutcome::InitFailed { error: e },
-            };
+            let (raw, metadata) =
+                match await_stream_start(client.conversation_stream(request), idle_timeout).await {
+                    Ok(pair) => pair,
+                    Err(e) => return AttemptOutcome::InitFailed { error: e },
+                };
             let (teed, captured) = tee_errors(raw);
             let l2 = stream_chat_completions(teed, metadata, request_id.clone(), idle_timeout);
             drive_l2(
@@ -563,11 +564,15 @@ async fn run_one_attempt(
             .await
         }
         ApiBackend::Responses => {
-            let (raw, metadata, doom_loop) =
-                match client.conversation_stream_responses(request).await {
-                    Ok(parts) => parts,
-                    Err(e) => return AttemptOutcome::InitFailed { error: e },
-                };
+            let (raw, metadata, doom_loop) = match await_stream_start(
+                client.conversation_stream_responses(request),
+                idle_timeout,
+            )
+            .await
+            {
+                Ok(parts) => parts,
+                Err(e) => return AttemptOutcome::InitFailed { error: e },
+            };
             if doom_check.is_none()
                 && let Some(collector) = &doom_loop
             {
@@ -603,7 +608,12 @@ async fn run_one_attempt(
             .await
         }
         ApiBackend::Messages => {
-            let (raw, metadata) = match client.conversation_stream_messages(request).await {
+            let (raw, metadata) = match await_stream_start(
+                client.conversation_stream_messages(request),
+                idle_timeout,
+            )
+            .await
+            {
                 Ok(pair) => pair,
                 Err(e) => return AttemptOutcome::InitFailed { error: e },
             };
@@ -623,6 +633,17 @@ async fn run_one_attempt(
             .await
         }
     }
+}
+
+async fn await_stream_start<T>(
+    future: impl std::future::Future<Output = SamplingResult<T>>,
+    idle_timeout: Duration,
+) -> SamplingResult<T> {
+    tokio::time::timeout(idle_timeout, future)
+        .await
+        .map_err(|_| SamplingError::IdleTimeout {
+            elapsed_secs: idle_timeout.as_secs(),
+        })?
 }
 
 /// Captured-error cell shared between the tee adapter and the per-request task.
@@ -760,8 +781,10 @@ async fn drive_l2(
                 Some(other) => {
                     if matches!(
                         other,
-                        SamplingEvent::FirstToken { .. }
-                            | SamplingEvent::ChannelToken { .. }
+                        SamplingEvent::ChannelToken {
+                            channel: crate::events::SamplingChannel::Text,
+                            ..
+                        }
                             | SamplingEvent::ToolCallDelta { .. }
                             | SamplingEvent::BackendToolCallStarted { .. }
                             | SamplingEvent::BackendToolCallCompleted { .. }
@@ -1055,6 +1078,60 @@ mod tests {
             xai_grok_sampling_types::LengthPolicy::Fail,
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn reasoning_only_output_does_not_veto_a_transport_retry() {
+        let request_id = RequestId::from("reasoning-retry");
+        let output_observed = Arc::new(AtomicBool::new(false));
+        let error =
+            SamplingError::EventStreamError("stream ended before response.completed".to_string());
+        let events = stream::iter([
+            SamplingEvent::FirstToken {
+                request_id: request_id.clone(),
+            },
+            SamplingEvent::ChannelToken {
+                request_id: request_id.clone(),
+                channel: crate::events::SamplingChannel::Reasoning,
+                text: "Checking the work".to_string(),
+                chunk_index: 1,
+            },
+            SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&error),
+            },
+        ]);
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+        let outcome = drive_l2(
+            events,
+            request_id,
+            &event_tx,
+            &CancellationToken::new(),
+            Arc::new(Mutex::new(None)),
+            None,
+            FailedResponseCapture::default(),
+            Arc::clone(&output_observed),
+            xai_grok_sampling_types::LengthPolicy::Fail,
+        )
+        .await;
+
+        assert!(matches!(outcome, AttemptOutcome::Failed { .. }));
+        assert!(
+            !output_observed.load(Ordering::Relaxed),
+            "hidden reasoning must not disable retry of a broken terminal stream"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_start_times_out_while_waiting_for_response_headers() {
+        let timeout = Duration::from_secs(60);
+        let result = await_stream_start::<()>(std::future::pending(), timeout).await;
+
+        assert!(matches!(
+            result,
+            Err(SamplingError::IdleTimeout { elapsed_secs: 60 })
+        ));
     }
 
     #[tokio::test]

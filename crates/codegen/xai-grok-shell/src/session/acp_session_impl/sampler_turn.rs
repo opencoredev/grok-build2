@@ -102,10 +102,20 @@ pub(super) fn transient_retry_eligible(error: &xai_grok_sampler::SamplingErrorIn
                 && reqwest::StatusCode::from_u16(status)
                     .is_ok_and(xai_grok_sampling_types::is_retryable_api_status)
         }),
+        SamplingErrorKind::EmptyResponse => {
+            error
+                .empty_response_context
+                .as_ref()
+                .is_some_and(|context| {
+                    matches!(
+                        context.reason,
+                        xai_grok_sampling_types::EmptyReason::ReasoningOnly
+                    )
+                })
+        }
         SamplingErrorKind::Auth
         | SamplingErrorKind::Serialization
         | SamplingErrorKind::RateLimited
-        | SamplingErrorKind::EmptyResponse
         | SamplingErrorKind::MaxTokensTruncation
         | SamplingErrorKind::DoomLoopDetected => false,
     }
@@ -996,7 +1006,7 @@ impl SessionActor {
             sampler_config.doom_loop_recovery = None;
         }
         // Carry over the session's per-chunk idle timeout via `SamplerConfig.idle_timeout_secs`
-        sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
+        sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.get().as_secs());
         self.sampler_handle.update_config(sampler_config);
     }
 
@@ -1383,7 +1393,14 @@ impl SessionActor {
 
         // 4d. Bounded resubmit, after the auth arms, before the terminal paths.
         //     Budgeted workflow children stay terminal (guards above)
-        if transient_retry_eligible(&error) && transient.enabled {
+        let current_generation_has_visible_output = self
+            .streaming_turn_capture
+            .lock()
+            .current_generation_has_visible_output();
+        if transient_retry_eligible(&error)
+            && transient.enabled
+            && !current_generation_has_visible_output
+        {
             if transient.budget_remaining() {
                 // Count intercepted attempts; section 5 sees only the final one.
                 if matches!(error.kind, SamplingErrorKind::IdleTimeout) {

@@ -142,7 +142,7 @@ async fn text_block_assembles_into_completed_response() {
             assert_eq!(a.model_id.as_deref(), Some("messages-compatible-model"));
             assert_eq!(response.stop_reason, Some(StopReason::Stop));
             // Provider message id and the verbatim wire stop reason survive onto the response (collapsed `stop_reason` loses the string)
-            assert_eq!(response.message_id.as_deref(), Some("msg_1"));
+            assert_eq!(response.message_id.as_deref(), Some("msg-test:msg_1"));
             assert_eq!(response.raw_stop_reason.as_deref(), Some("end_turn"));
             let u = response.usage.as_ref().expect("usage extracted");
             assert_eq!(u.prompt_tokens, 10);
@@ -150,6 +150,49 @@ async fn text_block_assembles_into_completed_response() {
         }
         other => panic!("expected Completed, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn repeated_provider_message_ids_are_unique_across_requests() {
+    async fn response_id(request_id: &str) -> (String, String) {
+        let raw = stream::iter(vec![
+            Ok(message_start()),
+            Ok(MessageStreamEvent::MessageStop),
+        ])
+        .boxed();
+        let events = collect(stream_messages(
+            raw,
+            None,
+            RequestId::from(request_id),
+            Duration::from_secs(60),
+        ))
+        .await;
+        let started = events
+            .iter()
+            .find_map(|event| match event {
+                SamplingEvent::ResponseStarted { message_id, .. } => Some(message_id.clone()),
+                _ => None,
+            })
+            .expect("response start");
+        let completed = events
+            .iter()
+            .find_map(|event| match event {
+                SamplingEvent::Completed { response, .. } => response.message_id.clone(),
+                _ => None,
+            })
+            .expect("response completion ID");
+        (started, completed)
+    }
+
+    let first = response_id("request-a").await;
+    let second = response_id("request-b").await;
+
+    assert_eq!(first.0, first.1, "one response must keep one stable ID");
+    assert_eq!(second.0, second.1, "one response must keep one stable ID");
+    assert_ne!(
+        first.0, second.0,
+        "later turns must not replace prior output"
+    );
 }
 
 #[tokio::test]
@@ -261,6 +304,33 @@ async fn multiple_thinking_blocks_emit_per_block_signatures_in_order() {
         sigs,
         vec!["sig-1", "sig-2"],
         "each thinking block emits its own signature in order"
+    );
+}
+
+#[tokio::test]
+async fn nameless_tool_use_fails_before_it_reaches_the_shell() {
+    let tool_start = MessageStreamEvent::ContentBlockStart {
+        index: 0,
+        content_block: ContentBlock::ToolUse {
+            id: String::new(),
+            name: String::new(),
+            input: serde_json::json!({}),
+            cache_control: None,
+        },
+    };
+    let raw = stream::iter(vec![Ok(message_start()), Ok(tool_start)]).boxed();
+    let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    assert!(matches!(
+        events.last(),
+        Some(SamplingEvent::Failed { error, .. })
+            if error.kind == crate::events::SamplingErrorKind::Http
+    ));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SamplingEvent::ToolCallDelta { .. })),
+        "the shell must not receive a phantom tool call"
     );
 }
 
@@ -652,6 +722,172 @@ async fn idle_timeout_when_stream_stalls() {
         }
         other => panic!("expected Failed(IdleTimeout), got {other:?}"),
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_timeout_after_text_completes_with_partial_response() {
+    let raw = stream::iter(vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "partial answer")),
+    ])
+    .chain(stream::pending())
+    .boxed();
+    let evs = collect(stream_messages(
+        raw,
+        None,
+        rid(),
+        Duration::from_millis(100),
+    ))
+    .await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(
+                response.assistant().unwrap().content.as_ref(),
+                "partial answer"
+            );
+            assert_eq!(response.stop_reason, Some(StopReason::Stop));
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+    assert!(
+        !evs.iter()
+            .any(|event| matches!(event, SamplingEvent::Failed { .. }))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_timeout_after_incomplete_tool_use_fails() {
+    let raw = stream::iter(vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: StreamDelta::InputJsonDelta {
+                partial_json: "{\"path\":".into(),
+            },
+        }),
+    ])
+    .chain(stream::pending())
+    .boxed();
+    let events = collect(stream_messages(
+        raw,
+        None,
+        rid(),
+        Duration::from_millis(100),
+    ))
+    .await;
+
+    assert!(matches!(
+        events.last(),
+        Some(SamplingEvent::Failed { error, .. })
+            if error.kind == crate::events::SamplingErrorKind::IdleTimeout
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_timeout_after_text_and_incomplete_tool_use_fails() {
+    let raw = stream::iter(vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "partial answer")),
+        Ok(block_stop(0)),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 1,
+            content_block: ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: StreamDelta::InputJsonDelta {
+                partial_json: "{\"path\":".into(),
+            },
+        }),
+    ])
+    .chain(stream::pending())
+    .boxed();
+    let events = collect(stream_messages(
+        raw,
+        None,
+        rid(),
+        Duration::from_millis(100),
+    ))
+    .await;
+
+    assert!(matches!(
+        events.last(),
+        Some(SamplingEvent::Failed { error, .. })
+            if error.kind == crate::events::SamplingErrorKind::IdleTimeout
+    ));
+}
+
+#[tokio::test]
+async fn clean_eof_after_incomplete_tool_use_fails() {
+    let raw = stream::iter(vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: StreamDelta::InputJsonDelta {
+                partial_json: "{\"path\":".into(),
+            },
+        }),
+    ])
+    .boxed();
+    let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    assert!(matches!(
+        events.last(),
+        Some(SamplingEvent::Failed { error, .. })
+            if error.kind == crate::events::SamplingErrorKind::Http
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_timeout_preserves_received_length_stop() {
+    let raw = stream::iter(vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "partial")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::MaxTokens)),
+    ])
+    .chain(stream::pending())
+    .boxed();
+    let evs = collect(stream_messages(
+        raw,
+        None,
+        rid(),
+        Duration::from_millis(100),
+    ))
+    .await;
+
+    assert!(matches!(
+        evs.last(),
+        Some(SamplingEvent::Completed { response, .. })
+            if response.stop_reason == Some(StopReason::Length)
+    ));
 }
 
 #[tokio::test]

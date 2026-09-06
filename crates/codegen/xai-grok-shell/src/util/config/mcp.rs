@@ -79,7 +79,22 @@ pub struct PrivacyConfig {
 pub(crate) fn get_mcp_server_config(name: &str) -> Option<McpServerConfig> {
     let root: TomlValue = crate::config::load_effective_config().ok()?;
     let configs = parse_mcp_servers_from_toml(&root);
-    configs.get(name).cloned()
+    let compat_toml: CompatConfigToml = root
+        .get("compat")
+        .cloned()
+        .and_then(|value| value.try_into().ok())
+        .unwrap_or_default();
+    let compat = crate::agent::config::resolve_compat_config(&compat_toml, None);
+    let codex = load_codex_mcp_servers_as_configs(&compat);
+    mcp_server_config_from_sources(name, &configs, &codex)
+}
+
+fn mcp_server_config_from_sources(
+    name: &str,
+    native: &IndexMap<String, McpServerConfig>,
+    codex: &IndexMap<String, McpServerConfig>,
+) -> Option<McpServerConfig> {
+    native.get(name).or_else(|| codex.get(name)).cloned()
 }
 
 /// Get MCP server config by name, checking project-scoped configs first.
@@ -150,6 +165,11 @@ pub(crate) fn load_mcp_servers_with_oauth(
                 servers_map.insert(name, config);
             }
         }
+    }
+    // Codex uses the same TOML table shape for most MCP fields. Load only
+    // `[mcp_servers]`; never merge the rest of Codex configuration.
+    for (name, config) in load_codex_mcp_servers_as_configs(compat) {
+        servers_map.entry(name).or_insert(config);
     }
     // Also load from ~/.claude.json (lower priority than TOML)
     for (name, config) in load_claude_json_mcp_servers_as_configs(cwd, compat) {
@@ -283,6 +303,14 @@ pub(crate) fn reload_mcp_servers_merged(
                 }
             }
         }
+    }
+    let codex_servers = load_codex_mcp_servers_as_configs(compat);
+    tracing::info!(
+        count = codex_servers.len(),
+        "Loaded MCP servers from ~/.codex/config.toml"
+    );
+    for (name, config) in codex_servers {
+        servers.entry(name).or_insert(config);
     }
     // Also load from ~/.claude.json (lower priority than TOML)
     let claude_servers = load_claude_json_mcp_servers_as_configs(cwd, compat);
@@ -518,6 +546,21 @@ pub(crate) fn collect_mcp_setup_configs(
             },
         );
     }
+    collect_plugin_mcp_setup_configs(&mut result, cwd, plugin_registry);
+    for (name, config) in load_codex_mcp_servers_as_configs(compat) {
+        if !config.enabled || config.setup.is_none() {
+            continue;
+        }
+        result.entry(name.clone()).or_insert(McpSetupServerEntry {
+            name,
+            config,
+            source: McpPreferenceSource {
+                kind: "config".to_string(),
+                plugin: None,
+                scope: Some(MCP_SCOPE_USER.to_string()),
+            },
+        });
+    }
     if !crate::claude_import::is_claude_import_marked_with_log("collect_mcp_setup_configs") {
         for (name, config) in load_claude_json_mcp_servers_as_configs(cwd, compat) {
             if !config.enabled || config.setup.is_none() {
@@ -562,44 +605,50 @@ pub(crate) fn collect_mcp_setup_configs(
             });
         }
     }
-    if let Some(registry) = plugin_registry {
-        let toml_claimed_names = all_toml_mcp_server_names(cwd);
-        for plugin in registry.active_plugins() {
-            // File first, then inline; first-wins matches runtime plugin load.
-            let mut plugin_configs = IndexMap::new();
-            if let Some(ref mcp_path) = plugin.mcp_config_path
-                && let Some(config) = read_mcp_json(mcp_path)
-            {
-                for (name, server) in config.mcp_servers {
-                    plugin_configs.entry(name).or_insert(server);
-                }
-            }
-            if let Some(ref inline_value) = plugin.inline_mcp_servers {
-                let normalized =
-                    xai_grok_agent::plugins::manifest::normalize_inline_mcp_servers(inline_value);
-                for (name, server) in mcp_config_from_json_value(&normalized).mcp_servers {
-                    plugin_configs.entry(name).or_insert(server);
-                }
-            }
-            for (name, config) in plugin_configs {
-                // Native plugin `enabled: false` is not unstuck by Space; skip.
-                // Personal disable uses `disabled_mcp_servers` and leaves this true.
-                if toml_claimed_names.contains(&name) || !config.enabled || config.setup.is_none() {
-                    continue;
-                }
-                result.entry(name.clone()).or_insert(McpSetupServerEntry {
-                    name,
-                    config,
-                    source: McpPreferenceSource {
-                        kind: "plugin".to_string(),
-                        plugin: Some(plugin.name.clone()),
-                        scope: None,
-                    },
-                });
+    result
+}
+
+fn collect_plugin_mcp_setup_configs(
+    result: &mut IndexMap<String, McpSetupServerEntry>,
+    cwd: &std::path::Path,
+    plugin_registry: Option<&xai_grok_agent::plugins::PluginRegistry>,
+) {
+    let Some(registry) = plugin_registry else {
+        return;
+    };
+    let toml_claimed_names = all_toml_mcp_server_names(cwd);
+    for plugin in registry.active_plugins() {
+        // File first, then inline. First wins, matching runtime plugin load.
+        let mut plugin_configs = IndexMap::new();
+        if let Some(ref mcp_path) = plugin.mcp_config_path
+            && let Some(config) = read_mcp_json(mcp_path)
+        {
+            for (name, server) in config.mcp_servers {
+                plugin_configs.entry(name).or_insert(server);
             }
         }
+        if let Some(ref inline_value) = plugin.inline_mcp_servers {
+            let normalized =
+                xai_grok_agent::plugins::manifest::normalize_inline_mcp_servers(inline_value);
+            for (name, server) in mcp_config_from_json_value(&normalized).mcp_servers {
+                plugin_configs.entry(name).or_insert(server);
+            }
+        }
+        for (name, config) in plugin_configs {
+            if toml_claimed_names.contains(&name) || !config.enabled || config.setup.is_none() {
+                continue;
+            }
+            result.entry(name.clone()).or_insert(McpSetupServerEntry {
+                name,
+                config,
+                source: McpPreferenceSource {
+                    kind: "plugin".to_string(),
+                    plugin: Some(plugin.name.clone()),
+                    scope: None,
+                },
+            });
+        }
     }
-    result
 }
 
 pub const MANAGED_GATEWAY_DISABLED_CONNECTORS_KEY: &str = "__managed_gateway_connectors";
@@ -1213,6 +1262,61 @@ pub(crate) fn load_mcp_json_servers_as_configs(
         return IndexMap::new();
     }
     load_mcp_json_servers_as_configs_unfiltered(cwd)
+}
+
+/// Load the supported `[mcp_servers.*]` records from Codex user config.
+///
+/// The loader never imports or copies the complete file. It keeps credentials
+/// in their original location and translates Codex's `http_headers` spelling
+/// to Grok's `headers` spelling in memory.
+pub(crate) fn load_codex_mcp_servers_as_configs(
+    compat: &CompatConfig,
+) -> IndexMap<String, McpServerConfig> {
+    if !compat.codex.mcps {
+        return IndexMap::new();
+    }
+    let Some(home) = xai_dirs::home_dir() else {
+        return IndexMap::new();
+    };
+    let path = home.join(".codex").join("config.toml");
+    load_codex_mcp_servers_from(&path)
+}
+
+fn load_codex_mcp_servers_from(path: &std::path::Path) -> IndexMap<String, McpServerConfig> {
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return IndexMap::new();
+    };
+    let Ok(mut root) = toml::from_str::<TomlValue>(&content) else {
+        tracing::warn!(path = %path.display(), "failed to parse Codex MCP config");
+        return IndexMap::new();
+    };
+    if let Some(entries) = root
+        .get_mut("mcp_servers")
+        .and_then(TomlValue::as_table_mut)
+    {
+        for (_, value) in entries.iter_mut() {
+            let Some(table) = value.as_table_mut() else {
+                continue;
+            };
+            if !table.contains_key("headers")
+                && let Some(headers) = table.remove("http_headers")
+            {
+                table.insert("headers".to_owned(), headers);
+            }
+        }
+    }
+    parse_mcp_servers_from_toml(&root)
+}
+
+pub(crate) fn load_codex_mcp_servers(compat: &CompatConfig) -> Vec<acp::McpServer> {
+    let preferences = load_mcp_preferences().file();
+    let sub = &crate::config::expand_env_vars_in_string;
+    load_codex_mcp_servers_as_configs(compat)
+        .into_iter()
+        .filter_map(|(name, config)| {
+            materialize_mcp_config(&name, config, &preferences, sub, McpEnabledFilter::Respect)
+        })
+        .collect()
 }
 
 /// Like [`load_mcp_json_servers_as_configs`] but bypasses the import-marker gate.
@@ -1852,6 +1956,66 @@ pub(crate) fn session_registry_local_override(root: Option<&TomlValue>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_mcp_loader_reads_only_servers_and_translates_http_headers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+model = "must-not-import"
+
+[model_providers.private]
+api_key = "must-not-import"
+
+[mcp_servers.remote]
+url = "https://example.com/mcp"
+http_headers = { Authorization = "Bearer test" }
+
+[mcp_servers.local]
+command = "server-bin"
+args = ["--stdio"]
+"#,
+        )
+        .unwrap();
+
+        let servers = load_codex_mcp_servers_from(&path);
+        assert_eq!(servers.len(), 2);
+        let remote = servers.get("remote").unwrap();
+        match &remote.transport {
+            McpServerTransportConfig::StreamableHttp { headers, .. } => {
+                assert_eq!(
+                    headers
+                        .as_ref()
+                        .and_then(|headers| headers.get("Authorization"))
+                        .map(String::as_str),
+                    Some("Bearer test")
+                );
+            }
+            other => panic!("expected HTTP server, got {other:?}"),
+        }
+        assert!(servers.contains_key("local"));
+    }
+
+    #[test]
+    fn codex_mcp_runtime_options_survive_config_lookup() {
+        let root: TomlValue = toml::from_str(
+            r#"
+[mcp_servers.codex]
+command = "server-bin"
+startup_timeout_sec = 12
+tool_timeout_sec = 34
+expose_image_base64 = true
+"#,
+        )
+        .unwrap();
+        let codex = parse_mcp_servers_from_toml(&root);
+        let config = mcp_server_config_from_sources("codex", &IndexMap::new(), &codex).unwrap();
+        assert_eq!(config.startup_timeout_sec, Some(12));
+        assert_eq!(config.tool_timeout_sec, Some(34));
+        assert_eq!(config.expose_image_base64, Some(true));
+    }
     use toml::Value as TomlValue;
 
     /// Env beats config.toml; unrecognized env defers; both absent defers to remote.

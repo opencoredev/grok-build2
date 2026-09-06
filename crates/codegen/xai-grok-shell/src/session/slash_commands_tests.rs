@@ -1606,6 +1606,47 @@ fn parse_skill_refs_single_skill() {
 }
 
 #[test]
+fn parse_skill_refs_accepts_t3_dollar_syntax() {
+    let skills = vec![make_skill("prg", true)];
+    let refs = parse_skill_references("$prg", &skills, all_gated()).unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].name, "prg");
+    assert_eq!(refs[0].args, "");
+}
+
+#[test]
+fn resolve_accepts_t3_dollar_skill_syntax() {
+    let skills = vec![make_skill("prg", true)];
+    let outcome = resolve(
+        vec![text_block("$prg")],
+        &skills,
+        all_gated(),
+        SkillSlashRewrite::default(),
+        &[],
+    )
+    .unwrap_err();
+    let SlashCommandOutcome::InvokeSkill { skills, .. } = outcome else {
+        panic!("expected InvokeSkill");
+    };
+    assert_eq!(skills[0].name, "prg");
+}
+
+#[test]
+fn unknown_dollar_token_remains_plain_text() {
+    let skills = vec![make_skill("prg", true)];
+    assert!(
+        resolve(
+            vec![text_block("$HOME")],
+            &skills,
+            all_gated(),
+            SkillSlashRewrite::default(),
+            &[],
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn parse_skill_refs_single_no_args() {
     let skills = vec![make_skill("commit", true)];
     let refs = parse_skill_references("/commit", &skills, all_gated()).unwrap();
@@ -2059,6 +2100,18 @@ fn goal_resume_resolves_to_resume() {
 }
 
 #[test]
+fn goal_complete_resolves_to_complete() {
+    assert!(matches!(
+        resolve_goal("complete"),
+        BuiltinAction::GoalComplete
+    ));
+    assert!(matches!(
+        resolve_goal("COMPLETE"),
+        BuiltinAction::GoalComplete
+    ));
+}
+
+#[test]
 fn goal_clear_resolves_to_clear() {
     assert!(matches!(resolve_goal("clear"), BuiltinAction::GoalClear));
 }
@@ -2155,6 +2208,7 @@ fn goal_command_name_is_goal() {
     assert_eq!(BuiltinAction::GoalStatus.command_name(), "goal");
     assert_eq!(BuiltinAction::GoalPause.command_name(), "goal");
     assert_eq!(BuiltinAction::GoalResume.command_name(), "goal");
+    assert_eq!(BuiltinAction::GoalComplete.command_name(), "goal");
     assert_eq!(BuiltinAction::GoalClear.command_name(), "goal");
     assert_eq!(
         BuiltinAction::GoalSet {
@@ -2178,6 +2232,7 @@ fn goal_args_provided() {
     assert!(!BuiltinAction::GoalStatus.args_provided());
     assert!(!BuiltinAction::GoalPause.args_provided());
     assert!(!BuiltinAction::GoalResume.args_provided());
+    assert!(!BuiltinAction::GoalComplete.args_provided());
     assert!(!BuiltinAction::GoalClear.args_provided());
 }
 

@@ -68,11 +68,12 @@ pub struct OtelExporterConfig {
 /// - `config`: runtime configuration; see [`OtelLayerConfig`].
 pub fn build_otel_layer<S>(
     client: OtelClientInfo,
-    config: OtelLayerConfig,
+    mut config: OtelLayerConfig,
 ) -> impl tracing_subscriber::layer::Layer<S>
 where
     S: tracing::Subscriber + for<'span> LookupSpan<'span>,
 {
+    config.exporter.enabled = network_export_enabled(config.exporter.enabled);
     let provider = TRACER_PROVIDER.get_or_init(|| build_tracer_provider(client, config));
     let tracer = provider.tracer("grok-cli");
     global::set_tracer_provider(provider.clone());
@@ -96,6 +97,10 @@ where
     OpenTelemetryLayer::new(tracer)
         .with_context_activation(false)
         .with_filter(otel_filter)
+}
+
+fn network_export_enabled(requested: bool) -> bool {
+    requested && !crate::NETWORK_TELEMETRY_DISABLED
 }
 fn build_tracer_provider(client: OtelClientInfo, config: OtelLayerConfig) -> SdkTracerProvider {
     match instrumentation::current_mode() {
@@ -454,6 +459,13 @@ pub fn otel_guard() -> OtelGuard {
 mod tests {
     use super::*;
     use xai_grok_auth::CredentialSnapshot;
+
+    #[test]
+    fn fork_policy_rejects_direct_otel_enablement() {
+        assert!(!network_export_enabled(true));
+        assert!(!network_export_enabled(false));
+    }
+
     #[test]
     fn build_export_headers_tracks_snapshot_and_respects_overrides() {
         let static_headers = std::collections::HashMap::new();

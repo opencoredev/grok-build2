@@ -395,6 +395,9 @@ impl FeedbackManager {
         session_id = %self.session_id,
     ))]
     pub async fn load_config(&self) {
+        if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+            return;
+        }
         let Some(client) = &self.feedback_client else {
             return; // No client, use defaults
         };
@@ -440,7 +443,7 @@ impl FeedbackManager {
         &self,
         prompt_id: Option<String>,
     ) -> Option<FeedbackRequest> {
-        if !self.config.feedback_enabled {
+        if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED || !self.config.feedback_enabled {
             return None;
         }
 
@@ -548,6 +551,9 @@ impl FeedbackManager {
         feedback_mode: FeedbackMode,
         prompt_id: Option<String>,
     ) {
+        if xai_grok_telemetry::NETWORK_TELEMETRY_DISABLED {
+            return;
+        }
         let Some(client) = &self.feedback_client else {
             return;
         };

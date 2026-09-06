@@ -10,6 +10,7 @@ const CANARY_PROMPT: &str = "CANARY_GRPC_PROMPT_TEXT do not export";
 const CANARY_MCP: &str = "canary-grpc-internal-mcp-server";
 
 #[test]
+#[ignore = "network telemetry is disabled in this fork"]
 fn external_stream_grpc_end_to_end() {
     let collected = col::Collected::default();
     let endpoint =

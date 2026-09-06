@@ -158,6 +158,15 @@ pub(crate) async fn apply(
     };
     let mut model_sampling =
         agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone());
+    model_sampling.idle_timeout_secs = Some({
+        let models = agent.models_manager.models();
+        let cfg = agent.cfg.borrow();
+        crate::agent::mvp_agent::resolve_inference_idle_timeout_secs(
+            &models,
+            &model_sampling.model,
+            cfg.remote_settings.as_ref(),
+        )
+    });
     agent.models_manager.apply_supported_effort(
         &mut model_sampling,
         effective_effort,
@@ -225,6 +234,14 @@ pub(crate) async fn apply(
             model.map(|e| &e.info),
         )
     };
+    let system_prompt_label = {
+        let cfg = agent.cfg.borrow();
+        crate::util::config::resolve_system_prompt_label(
+            &cfg,
+            model_id.0.as_ref(),
+            Some(model.info()),
+        )
+    };
     let (tx, rx) = oneshot::channel();
     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
         sampling_config: model_sampling,
@@ -232,6 +249,7 @@ pub(crate) async fn apply(
         is_family_switch,
         apply_prompt_override,
         skip_prompt_rewrite: did_rebuild || model_unchanged,
+        system_prompt_label,
         auto_compact_threshold_percent: new_threshold,
         responds_to: tx,
     });

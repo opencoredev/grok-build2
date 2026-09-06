@@ -19,14 +19,15 @@ use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
 /// The output stream emits exactly one terminal event per request.
-/// A normal stream end emits [`SamplingEvent::Completed`]; an error or idle timeout emits [`SamplingEvent::Failed`].
+/// A normal stream end emits [`SamplingEvent::Completed`]. An idle timeout after usable output
+/// completes with that partial output; a timeout before output emits [`SamplingEvent::Failed`].
 /// Callers must not consume past the terminal event (the implementation `return`s after yielding it).
 ///
 /// `idle_timeout` covers two cases:
 /// 1. The transport stops yielding chunks at all (`tokio::time::timeout`).
 /// 2. The transport keeps yielding empty / keepalive chunks but no meaningful content (separate `last_content_chunk_at` timer).
 ///
-/// Both produce `SamplingEvent::Failed { kind: IdleTimeout }`.
+/// Both use the same partial-output rule.
 pub fn stream_chat_completions<'a>(
     raw_stream: BoxStream<'a, Result<ChatCompletionChunk, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
@@ -71,6 +72,8 @@ pub fn stream_chat_completions<'a>(
         // Separate counter for AgentMessageChunk (text-only) emissions
         // Mirrored onto ConversationResponse.message_chunks_emitted so downstream can detect lost streaming events
         let mut message_chunk_count: u64 = 0;
+        let mut has_usable_output = false;
+        let mut timed_out_after_output = false;
 
         // The outer `tokio::time::timeout(idle_timeout, stream.next())` already catches a transport that stops yielding chunks
         // This second timer catches the model emitting keepalive or empty-delta SSE events: they satisfy the outer timer but make no real progress
@@ -83,6 +86,10 @@ pub fn stream_chat_completions<'a>(
                 Ok(Some(next)) => next,
                 Ok(None) => break, // stream ended normally
                 Err(_elapsed) => {
+                    if has_usable_output {
+                        timed_out_after_output = true;
+                        break;
+                    }
                     let err = SamplingError::IdleTimeout {
                         elapsed_secs: idle_timeout.as_secs(),
                     };
@@ -190,12 +197,12 @@ pub fn stream_chat_completions<'a>(
                     let mut name_for_event: Option<String> = None;
                     let mut args_for_event: Option<String> = None;
 
-                    if let Some(id) = tc_delta.id {
+                    if let Some(id) = tc_delta.id.filter(|id| !id.trim().is_empty()) {
                         entry.0 = id.clone();
                         id_for_event = Some(id);
                     }
                     if let Some(func) = tc_delta.function {
-                        if let Some(name) = func.name {
+                        if let Some(name) = func.name.filter(|name| !name.trim().is_empty()) {
                             entry.1 = name.clone();
                             name_for_event = Some(name);
                         }
@@ -215,9 +222,15 @@ pub fn stream_chat_completions<'a>(
                 }
             }
 
+            has_usable_output = !content_acc.is_empty() || finish_reason.is_some();
+
             if chunk_has_content {
                 last_content_chunk_at = Instant::now();
             } else if last_content_chunk_at.elapsed() > idle_timeout {
+                if has_usable_output {
+                    timed_out_after_output = true;
+                    break;
+                }
                 let err = SamplingError::IdleTimeout {
                     elapsed_secs: idle_timeout.as_secs(),
                 };
@@ -229,7 +242,46 @@ pub fn stream_chat_completions<'a>(
             }
         }
 
+        let unfinished_tool_call =
+            !tool_call_acc.is_empty() && finish_reason != Some(StopReason::ToolCalls);
+        if unfinished_tool_call {
+            let err = if timed_out_after_output {
+                SamplingError::IdleTimeout {
+                    elapsed_secs: idle_timeout.as_secs(),
+                }
+            } else {
+                SamplingError::EventStreamError(
+                    "provider stream ended before tool call completed".to_string(),
+                )
+            };
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
+
+        if timed_out_after_output {
+            if finish_reason.is_none() {
+                finish_reason = Some(StopReason::Stop);
+            }
+        }
+
         // ── Build the final response ─────────────────────────────────
+        if tool_call_acc
+            .values()
+            .any(|(id, name, _)| id.trim().is_empty() || name.trim().is_empty())
+        {
+            let err = SamplingError::EventStreamError(
+                "provider ended a tool call without a non-empty id and name".to_string(),
+            );
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
+
         let tool_calls: Vec<ToolCall> = tool_call_acc
             .into_values()
             .map(|(id, name, arguments)| ToolCall {
@@ -239,17 +291,10 @@ pub fn stream_chat_completions<'a>(
             })
             .collect();
 
-        // Tool calls override the stop reason, even an explicit `length`.
-        // NOTE: the Messages backend has the opposite precedence: Length wins there
-        // That lets the `LengthPolicy` gate refuse a trailing call whose arguments may be truncated
-        // Load-bearing; don't "fix" here
+        // A tool call reaches this point only after the provider emitted the terminal
+        // `tool_calls` finish reason. Other terminal reasons fail above because their
+        // argument buffers may be incomplete.
         if !tool_calls.is_empty() {
-            if finish_reason == Some(StopReason::Length) {
-                tracing::warn!(
-                    request_id = %request_id,
-                    "tool calls mask a length-truncated response; arguments may be truncated"
-                );
-            }
             finish_reason = Some(StopReason::ToolCalls);
         }
 
@@ -510,10 +555,8 @@ mod tests {
         }
     }
 
-    /// Pins the load-bearing precedence: tool calls override an explicit `length` finish (opposite of the Messages backend).
-    /// See the NOTE at the override site.
     #[tokio::test]
-    async fn tool_calls_override_length_finish() {
+    async fn length_finish_with_tool_calls_fails() {
         let tool_chunk = make_chunk(vec![ChatChunkDelta {
             role: None,
             content: None,
@@ -542,13 +585,52 @@ mod tests {
         ))
         .await;
 
-        match events.last().unwrap() {
-            SamplingEvent::Completed { response, .. } => {
-                assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
-                assert_eq!(response.tool_calls().len(), 1);
-            }
-            other => panic!("expected Completed(ToolCalls), got {other:?}"),
-        }
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Failed { error, .. })
+                if error.kind == crate::events::SamplingErrorKind::Http
+        ));
+    }
+
+    #[tokio::test]
+    async fn nameless_tool_call_fails_instead_of_poisoning_history() {
+        let tool_chunk = make_chunk(vec![ChatChunkDelta {
+            role: None,
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![ChunkToolCallDelta {
+                index: 0,
+                id: None,
+                kind: Some("function".into()),
+                function: Some(ToolCallFunctionDelta {
+                    name: None,
+                    arguments: Some(r#"{"command":"ls"}"#.into()),
+                }),
+            }],
+            tool_call_id: None,
+        }]);
+        let raw =
+            stream::iter::<Vec<Result<ChatCompletionChunk, SamplingError>>>(vec![Ok(tool_chunk)])
+                .boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Failed { error, .. })
+                if error.kind == crate::events::SamplingErrorKind::Http
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+            "a malformed tool call must not be committed to chat history"
+        );
     }
 
     #[tokio::test]
@@ -569,17 +651,18 @@ mod tests {
             }],
             tool_call_id: None,
         }]);
-        // Second chunk has only an argument fragment
+        // Devin sends empty id and name strings on argument-only continuation chunks.
+        // They must not erase the values from the first chunk or reach the client.
         let chunk2 = make_chunk(vec![ChatChunkDelta {
             role: None,
             content: None,
             reasoning_content: None,
             tool_calls: vec![ChunkToolCallDelta {
                 index: 0,
-                id: None,
+                id: Some(String::new()),
                 kind: None,
                 function: Some(ToolCallFunctionDelta {
-                    name: None,
+                    name: Some(String::new()),
                     arguments: Some("1}".into()),
                 }),
             }],
@@ -589,6 +672,7 @@ mod tests {
         let raw = stream::iter::<Vec<Result<ChatCompletionChunk, SamplingError>>>(vec![
             Ok(chunk1),
             Ok(chunk2),
+            Ok(final_chunk(FinishReason::ToolCalls)),
         ])
         .boxed();
         let events = collect(stream_chat_completions(
@@ -668,7 +752,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn idle_timeout_when_stream_stalls() {
+    async fn idle_timeout_after_text_completes_with_partial_response() {
         // A stream that yields one chunk then hangs forever.
         let raw = stream::iter(vec![Ok(text_chunk("hello"))])
             .chain(stream::pending())
@@ -681,13 +765,162 @@ mod tests {
         ))
         .await;
 
-        // The stream emits StreamStarted, FirstToken, ChannelToken, then Failed(IdleTimeout) when the stall hits the deadline
         match events.last().unwrap() {
-            SamplingEvent::Failed { error, .. } => {
-                assert_eq!(error.kind, crate::events::SamplingErrorKind::IdleTimeout);
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.assistant().unwrap().content.as_ref(), "hello");
+                assert_eq!(response.stop_reason, Some(StopReason::Stop));
             }
-            other => panic!("expected Failed(IdleTimeout), got {other:?}"),
+            other => panic!("expected Completed, got {other:?}"),
         }
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Failed { .. }))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timeout_after_incomplete_tool_call_fails() {
+        let tool_chunk = make_chunk(vec![ChatChunkDelta {
+            role: None,
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![ChunkToolCallDelta {
+                index: 0,
+                id: Some("call-1".into()),
+                kind: Some("function".into()),
+                function: Some(ToolCallFunctionDelta {
+                    name: Some("read_file".into()),
+                    arguments: Some("{\"path\":".into()),
+                }),
+            }],
+            tool_call_id: None,
+        }]);
+        let raw = stream::iter(vec![Ok(tool_chunk)])
+            .chain(stream::pending())
+            .boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_millis(100),
+        ))
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Failed { error, .. })
+                if error.kind == crate::events::SamplingErrorKind::IdleTimeout
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timeout_after_text_and_incomplete_tool_call_fails() {
+        let tool_chunk = make_chunk(vec![ChatChunkDelta {
+            role: None,
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![ChunkToolCallDelta {
+                index: 0,
+                id: Some("call-1".into()),
+                kind: Some("function".into()),
+                function: Some(ToolCallFunctionDelta {
+                    name: Some("read_file".into()),
+                    arguments: Some("{\"path\":".into()),
+                }),
+            }],
+            tool_call_id: None,
+        }]);
+        let raw = stream::iter(vec![Ok(text_chunk("partial answer")), Ok(tool_chunk)])
+            .chain(stream::pending())
+            .boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_millis(100),
+        ))
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Failed { error, .. })
+                if error.kind == crate::events::SamplingErrorKind::IdleTimeout
+        ));
+    }
+
+    #[tokio::test]
+    async fn clean_eof_after_incomplete_tool_call_fails() {
+        let tool_chunk = make_chunk(vec![ChatChunkDelta {
+            role: None,
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![ChunkToolCallDelta {
+                index: 0,
+                id: Some("call-1".into()),
+                kind: Some("function".into()),
+                function: Some(ToolCallFunctionDelta {
+                    name: Some("read_file".into()),
+                    arguments: Some("{\"path\":".into()),
+                }),
+            }],
+            tool_call_id: None,
+        }]);
+        let raw = stream::iter(vec![Ok(tool_chunk)]).boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Failed { error, .. })
+                if error.kind == crate::events::SamplingErrorKind::Http
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timeout_without_output_still_fails() {
+        let raw = stream::pending().boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_millis(100),
+        ))
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Failed { error, .. })
+                if error.kind == crate::events::SamplingErrorKind::IdleTimeout
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timeout_preserves_received_length_stop() {
+        let raw = stream::iter(vec![
+            Ok(text_chunk("partial")),
+            Ok(final_chunk(FinishReason::Length)),
+        ])
+        .chain(stream::pending())
+        .boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_millis(100),
+        ))
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Completed { response, .. })
+                if response.stop_reason == Some(StopReason::Length)
+        ));
     }
 
     #[tokio::test]

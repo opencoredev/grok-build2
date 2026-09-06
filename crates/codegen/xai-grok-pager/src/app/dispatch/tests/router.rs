@@ -320,6 +320,25 @@ fn config_editor_action_still_uses_typed_request() {
         }) if queued == &path
     ));
 }
+
+#[test]
+fn cli_proxy_login_action_queues_one_typed_request() {
+    use crate::app::cli_proxy_login::CliProxyProvider;
+
+    let mut app = test_app_with_agent();
+    assert!(dispatch(Action::CliProxyLogin(CliProxyProvider::Claude), &mut app).is_empty());
+    assert_eq!(
+        app.pending_cli_proxy_login.map(|request| request.provider),
+        Some(CliProxyProvider::Claude)
+    );
+
+    assert!(dispatch(Action::CliProxyLogin(CliProxyProvider::Devin), &mut app).is_empty());
+    assert_eq!(
+        app.pending_cli_proxy_login.map(|request| request.provider),
+        Some(CliProxyProvider::Claude),
+        "a second login must not replace the active request"
+    );
+}
 fn seed_foreign_resume_hint(
     app: &mut AppView,
     tool: xai_grok_foreign_sessions::ForeignSessionTool,

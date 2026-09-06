@@ -2374,8 +2374,10 @@ impl SessionActor {
         let mut auth_retry_schedule = AuthRetrySchedule::new();
         let mut rate_limit_waits = self.rate_limit_wait_budget();
         let mut transient_retry_attempts: u32 = 0;
+        let goal_active = self.goal_tracker.lock().status()
+            == Some(crate::session::goal_tracker::GoalStatus::Active);
         let transient_retry_enabled =
-            self.transient_retry_enabled && !self.attach_non_interactive.get();
+            self.transient_retry_enabled && (!self.attach_non_interactive.get() || goal_active);
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut model_fingerprint: Option<String> = None;
         let mut structured_output_retries: u32 = 0;

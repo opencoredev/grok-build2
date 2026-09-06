@@ -49,7 +49,7 @@ pub struct SkillsConfig {
 /// List all discovered skills with their metadata.
 ///
 /// Priority order: Local (cwd/.grok/skills, cwd/.agents/skills, cwd/.claude/skills) → Intermediate dirs →
-/// Repo (repo_root/.grok/skills, repo_root/.agents/skills, repo_root/.claude/skills) → User (~/.grok/skills, ~/.agents/skills, ~/.claude/skills)
+/// Repo (repo_root/.grok/skills, repo_root/.agents/skills, repo_root/.claude/skills) → User (~/.grok/skills, ~/.agents/skills, ~/.claude/skills, ~/.codex/skills)
 /// → additional paths from `config.paths`
 /// → Server (injected `config.server_skill_dirs`)
 /// → Bundled (injected `config.bundled_skill_dirs` + `~/.grok/bundled`; lowest precedence).
@@ -195,7 +195,7 @@ pub fn collect_skill_config_dirs(
     }
 
     // Priority 3: Global user dirs. `.grok` comes from `grok_home` (which may be overridden), so it's handled separately.
-    // `.agents` is always added, while `.claude`/`.cursor` are gated by the skills compat cells
+    // `.agents` is always added, while vendor roots are gated by their skills compat cells.
     try_add(grok_home);
     if let Some(home) = xai_dirs::home_dir() {
         try_add(home.join(".agents"));
@@ -204,6 +204,10 @@ pub fn collect_skill_config_dirs(
         }
         if compat.cursor.skills {
             try_add(home.join(".cursor"));
+        }
+        if compat.codex.skills {
+            try_add(home.join(".codex"));
+            try_add(home.join(".codex/plugins/cache"));
         }
     }
 
@@ -295,8 +299,9 @@ async fn list_skills_with_options(
         let scope = scope_for_config_dir(config_dir, cwd.as_deref(), git_root.as_deref());
 
         // Skills before commands: skills win name collisions.
+        let skill_paths = skill_paths_for_config_dir(config_dir);
         collect_discovered_paths(
-            find_skill_paths(config_dir),
+            skill_paths,
             scope,
             &mut seen_canonical_paths,
             &mut skill_files,
@@ -318,6 +323,14 @@ async fn list_skills_with_options(
     );
 
     parse_skill_files(skill_files)
+}
+
+fn skill_paths_for_config_dir(config_dir: &Path) -> Vec<PathBuf> {
+    if config_dir.ends_with(".codex/plugins/cache") {
+        find_skill_md_paths(config_dir)
+    } else {
+        find_skill_paths(config_dir)
+    }
 }
 
 /// Expand a `~`-prefixed path string to an absolute `PathBuf`.
@@ -2360,7 +2373,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path();
         // Not a git repo, so it falls to the cwd-only branch (no upward walk)
-        for name in [".grok", ".agents", ".claude", ".cursor"] {
+        for name in [".grok", ".agents", ".claude", ".cursor", ".codex"] {
             fs::create_dir_all(cwd.join(name)).unwrap();
         }
 
@@ -2371,6 +2384,7 @@ mod tests {
             collect_skill_config_dirs(Some(cwd), None, tmp.path(), &[], CompatConfig::default());
         assert!(ends_with(&all, ".claude"), "claude missing: {all:?}");
         assert!(ends_with(&all, ".cursor"), "cursor missing: {all:?}");
+        assert!(ends_with(&all, ".codex"), "codex missing: {all:?}");
 
         // With cursor.skills off, .cursor is dropped and .claude kept
         let mut compat = CompatConfig::default();
@@ -2382,6 +2396,35 @@ mod tests {
         );
         assert!(ends_with(&dirs, ".claude"), "claude must remain: {dirs:?}");
         assert!(ends_with(&dirs, ".grok"), "grok must remain: {dirs:?}");
+
+        compat.codex.skills = false;
+        let dirs = collect_skill_config_dirs(Some(cwd), None, tmp.path(), &[], compat);
+        assert!(
+            !ends_with(&dirs, ".codex"),
+            "codex must be gated off: {dirs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_plugin_cache_skills_are_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join(".codex/plugins/cache");
+        let plugin_skill =
+            cache.join("openai-bundled/visualize/1.0.0/skills/codex-plugin-cache-test-skill");
+        write_skill_md(&plugin_skill, "codex-plugin-cache-test-skill");
+        let skills = parse_skill_files(
+            skill_paths_for_config_dir(&cache)
+                .into_iter()
+                .map(|path| (path, SkillScope::User))
+                .collect(),
+        );
+
+        assert!(
+            skills
+                .iter()
+                .any(|skill| skill.name == "codex-plugin-cache-test-skill"),
+            "Codex plugin cache skill was not discovered: {skills:?}"
+        );
     }
 
     // ── Same-scope frontmatter-name collisions (copied skill dirs) ──────

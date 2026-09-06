@@ -76,6 +76,17 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     let mut messages: Vec<Message> = Vec::new();
     let mut pending_assistant: Vec<ContentBlock> = Vec::new();
     let mut pending_tool_results: Vec<ContentBlock> = Vec::new();
+    let invalid_tool_call_ids: std::collections::HashSet<String> = req
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::Assistant(assistant) => Some(&assistant.tool_calls),
+            _ => None,
+        })
+        .flatten()
+        .filter(|tool_call| tool_call.id.trim().is_empty() || tool_call.name.trim().is_empty())
+        .map(|tool_call| tool_call.id.to_string())
+        .collect();
 
     let sanitize_tool_call_id = |id: &str| -> String {
         id.chars()
@@ -189,6 +200,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 }
 
                 for tc in &a.tool_calls {
+                    if tc.id.trim().is_empty() || tc.name.trim().is_empty() {
+                        continue;
+                    }
                     let input =
                         serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
                     pending_assistant.push(ContentBlock::ToolUse {
@@ -200,6 +214,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 }
             }
             ConversationItem::ToolResult(t) => {
+                if invalid_tool_call_ids.contains(&t.tool_call_id) {
+                    continue;
+                }
                 flush_assistant(&mut pending_assistant, &mut messages);
                 let content = if t.images.is_empty() {
                     ToolResultContent::Text(t.content.as_ref().to_owned())

@@ -1,0 +1,16 @@
+{
+  "name": "grok-build2",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.0",
+  "scripts": {
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "test:release": "bun test scripts/release.test.ts scripts/update-release.test.ts",
+    "release:package": "bun scripts/release.ts"
+  },
+  "devDependencies": {
+    "@changesets/cli": "2.31.0"
+  }
+}

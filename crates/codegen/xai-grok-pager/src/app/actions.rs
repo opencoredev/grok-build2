@@ -580,8 +580,6 @@ pub enum Action {
     OpenCommandPalette,
     /// Open the in-TUI How-to Guides doc picker (`/docs`, palette "How-to Guides").
     OpenHowtoGuides,
-    /// Open the onboarding tutorial overlay (`/tutorial` or the command palette).
-    OpenTutorial,
     /// Open the reset-settings confirmation dialog for a specific key.
     /// Moves the Settings modal state into `ResetSettingsConfirm` so the underlying modal survives the confirm dialog.
     OpenResetConfirm {
@@ -607,6 +605,8 @@ pub enum Action {
     SwitchAccount,
     /// User pressed login on the welcome screen.
     Login,
+    /// Suspend the TUI and open a CLIProxyAPI subscription login.
+    CliProxyLogin(crate::app::cli_proxy_login::CliProxyProvider),
     /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,

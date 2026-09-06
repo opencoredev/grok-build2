@@ -350,6 +350,8 @@ pub enum SessionCommand {
         /// Set by the model-switch orchestrator immediately after a successful `RebuildAgentForDefinition`.
         /// The rebuild handler already installed the fresh harness's prompt; the concise/default swap must not clobber it.
         skip_prompt_rewrite: bool,
+        /// Identity resolved for the selected model.
+        system_prompt_label: String,
         /// Re-resolved auto-compact threshold for the new model.
         /// Computed by `MvpAgent` against the new model id.
         /// Per-model remote settings and per-model user TOML overrides then target the right model after a `/model` switch.

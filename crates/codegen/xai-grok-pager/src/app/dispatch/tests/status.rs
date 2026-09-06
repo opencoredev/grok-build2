@@ -1571,22 +1571,6 @@ fn minimal_update_notice_no_active_agent_is_noop() {
     commit_minimal_update_notice(&mut app, "9.9.9");
 }
 
-// ── Tutorial dispatch tests ──────────────────────────────────────────
-
-/// `/tutorial` (and the palette entry) open the overlay; dispatching again while open toggles it closed.
-/// No side effects either way.
-#[test]
-fn open_tutorial_toggles_overlay_without_effects() {
-    let mut app = test_app();
-    let effects = dispatch(Action::OpenTutorial, &mut app);
-    assert!(app.tutorial.is_some(), "tutorial opens");
-    assert!(effects.is_empty(), "open emits nothing, got: {effects:?}");
-
-    let effects = dispatch(Action::OpenTutorial, &mut app);
-    assert!(app.tutorial.is_none(), "toggle closes");
-    assert!(effects.is_empty(), "close emits nothing, got: {effects:?}");
-}
-
 // ── Usage modal (full TUI) dispatch tests ────────────────────────────
 
 fn usage_modal_state(app: &AppView) -> &crate::views::usage_modal::UsageInfoModalState {

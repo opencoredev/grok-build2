@@ -14,7 +14,7 @@ pub(crate) fn build_prefetched_map(
         let entry = ModelEntry {
             info,
             api_key: None,
-            env_key: None,
+            env_key: m.env_key,
             auth_provider: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
         };
@@ -133,7 +133,9 @@ fn fetch_models_uncommitted(
 
     let cache = ModelsCacheManager::new();
     if let Some(cached) = cache.load_fresh(&cache_auth, &cache_origin) {
-        return ModelsPrefetch::Cached(cached.models);
+        let mut models = cached.models;
+        config::apply_custom_endpoint_env_keys(endpoints, &mut models);
+        return ModelsPrefetch::Cached(models);
     }
 
     if !remote_fetch_enabled {
@@ -148,7 +150,8 @@ fn fetch_models_uncommitted(
                 ModelFetchAuth::ApiKey => Some(endpoints.xai_api_base_url.clone()),
                 _ => None,
             };
-            let map = build_prefetched_map(models, api_base_url_override);
+            let mut map = build_prefetched_map(models, api_base_url_override);
+            config::apply_custom_endpoint_env_keys(endpoints, &mut map);
 
             tracing::info!(count = map.len(), etag = ?etag, "Prefetched models");
             ModelsPrefetch::Fetched(ModelsCacheWrite {

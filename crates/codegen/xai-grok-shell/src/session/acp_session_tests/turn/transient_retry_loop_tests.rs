@@ -6,6 +6,7 @@ use super::rate_limit_backoff_tests::{
 };
 use super::*;
 use std::time::Duration;
+use xai_grok_test_support::sse::responses_api_script_exact;
 use xai_grok_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
 
 /// The turn future needs a session-sized stack (spawn.rs: 8 MiB); default test stacks overflow.
@@ -40,6 +41,14 @@ fn sampler_surfaces_5xx() -> xai_grok_sampler::RetryPolicy {
 
 fn overloaded_503() -> ScriptedResponse {
     ScriptedResponse::text(503, "upstream overloaded")
+}
+
+fn responses_stream_without_terminal() -> ScriptedResponse {
+    let first_event = responses_api_script_exact("unused", "test")
+        .into_iter()
+        .next()
+        .expect("Responses script must start with response.created");
+    ScriptedResponse::sse(vec![first_event])
 }
 
 fn retrying_events(retries: &CapturedRetries) -> Vec<(u32, u32, String)> {
@@ -126,6 +135,53 @@ fn transient_5xx_resubmits_until_success() {
                 ],
                 "attempt numbering is post-increment and the cause maps 5xx -> Server error"
             );
+        })
+    });
+}
+
+#[test]
+fn attached_goal_session_retries_responses_stream_without_terminal() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            server.enqueue_response("/v1/responses", responses_stream_without_terminal());
+
+            let (actor, retries) =
+                actor_under_test(&server, SessionKind::Main, sampler_surfaces_5xx(), true).await;
+            actor.attach_non_interactive.set(true);
+            actor.goal_tracker.lock().create_goal(
+                "g-attached-retry".into(),
+                "finish the build".into(),
+                None,
+                0,
+                "2026-01-01T00:00:00Z".into(),
+                None,
+            );
+
+            let requests_before = server.request_count();
+            let outcome = actor
+                .process_conversation_turn_with_recovery(
+                    "req-attached-goal-retry",
+                    None,
+                    None,
+                    None,
+                    &mut length_salvage::LengthSalvage::new(None),
+                )
+                .await;
+            pump_local_tasks().await;
+
+            assert!(
+                outcome.is_ok(),
+                "the attached goal must survive a Responses stream with no terminal event"
+            );
+            assert_eq!(
+                server.request_count() - requests_before,
+                2,
+                "the failed request must be resubmitted once"
+            );
+            assert_eq!(retrying_events(&retries).len(), 1);
         })
     });
 }

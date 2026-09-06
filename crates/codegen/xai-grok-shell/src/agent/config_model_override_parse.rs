@@ -706,6 +706,10 @@ mod tests {
                 description: Some("Deep reasoning".to_string()),
                 default: true,
             }],
+            variants: vec![super::super::config::ModelVariant {
+                effort: ReasoningEffort::High,
+                model_id: "m-high".to_string(),
+            }],
             supports_backend_search: Some(false),
             compactions_remaining: Some(CompactionsRemaining::Fixed(1)),
             compaction_at_tokens: Some(CompactionAtTokens::Fixed(100_000)),

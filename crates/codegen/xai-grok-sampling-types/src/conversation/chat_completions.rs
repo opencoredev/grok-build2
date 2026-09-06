@@ -115,6 +115,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
             let tool_calls: Vec<ToolCallRequest> = a
                 .tool_calls
                 .into_iter()
+                .filter(|tc| !tc.id.trim().is_empty() && !tc.name.trim().is_empty())
                 .map(|tc| {
                     let arguments = sanitize_tool_arguments(&tc.id, &tc.name, tc.arguments.clone());
                     ToolCallRequest::function(tc.name, arguments.as_ref().to_owned())
@@ -183,6 +184,16 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
 pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRequestMessage> {
     let mut out: Vec<ChatRequestMessage> = Vec::with_capacity(items.len());
     let mut pending_reasoning: Vec<String> = Vec::new();
+    let invalid_tool_call_ids: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::Assistant(assistant) => Some(&assistant.tool_calls),
+            _ => None,
+        })
+        .flatten()
+        .filter(|tool_call| tool_call.id.trim().is_empty() || tool_call.name.trim().is_empty())
+        .map(|tool_call| tool_call.id.to_string())
+        .collect();
 
     for item in items {
         match item {
@@ -203,6 +214,11 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
             ConversationItem::BackendToolCall(_) => {
                 // Keep `pending_reasoning` so it still folds onto the following assistant, as the Responses path does
                 out.push(conversation_item_to_chat_message(item));
+            }
+            ConversationItem::ToolResult(result)
+                if invalid_tool_call_ids.contains(&result.tool_call_id) =>
+            {
+                pending_reasoning.clear();
             }
             other => {
                 pending_reasoning.clear();

@@ -172,6 +172,58 @@ async fn load_rebuilds_chat_history_from_updates() {
             "rebuilt cache carries the transcript text"
         );
 }
+
+#[tokio::test]
+async fn rebuilt_history_uses_canonical_tool_name_instead_of_display_title() {
+    let temp_dir = TempDir::new().unwrap();
+    let info = create_test_info();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    adapter.init_session(&info, default_model_id()).await.unwrap();
+    let notify = |update| {
+        SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+            info.id.clone(),
+            update,
+        )))
+    };
+    let tool_call = acp::ToolCall::new(acp::ToolCallId::new("call-1"), "")
+        .raw_input(Some(serde_json::json!({"path": "README.md"})))
+        .meta(Some(
+            serde_json::json!({"x.ai/tool": {"name": "read_file"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ));
+    adapter
+        .append_update(&info, &notify(acp::SessionUpdate::ToolCall(tool_call)))
+        .await
+        .unwrap();
+    adapter
+        .append_update(
+            &info,
+            &notify(acp::SessionUpdate::ToolCallUpdate(
+                acp::ToolCallUpdate::new(
+                    acp::ToolCallId::new("call-1"),
+                    acp::ToolCallUpdateFields::new()
+                        .status(Some(acp::ToolCallStatus::Completed))
+                        .raw_output(Some(serde_json::json!({"content": "ok"}))),
+                ),
+            )),
+        )
+        .await
+        .unwrap();
+
+    let loaded = adapter.load_session(&info).await.unwrap();
+    let tool_call = loaded
+        .chat_history
+        .iter()
+        .find_map(|item| match item {
+            ConversationItem::Assistant(assistant) => assistant.tool_calls.first(),
+            _ => None,
+        })
+        .expect("rebuilt assistant tool call");
+    assert_eq!(tool_call.name, "read_file");
+    assert_eq!(tool_call.arguments.as_ref(), r#"{"path":"README.md"}"#);
+}
 #[tokio::test]
 async fn workflow_run_manifest_round_trips_and_clear_tombstone_wins() {
     use crate::session::workflow::store::{

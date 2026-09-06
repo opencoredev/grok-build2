@@ -156,7 +156,7 @@ Open an external editor for the prompt, in either render mode. Grok resolves `$V
 
 Switch the current session to the other render mode, in place. `/minimal` (offered while you're in fullscreen) switches to the experimental scrollback-native mode; `/fullscreen` (offered while you're in minimal; alias `/full`) switches back to standard fullscreen mode. The switch happens inside the running process — nothing restarts, so a running turn keeps streaming and your composer draft, queued prompts, and permission mode all carry over; a marker (committed line in minimal, toast in fullscreen) reminds you how to switch back. Both are session-scoped — they don't touch `config.toml` — and the `--minimal` / `--fullscreen` CLI flags are session-scoped the same way. To make plain `grok` open in a given mode by default, use `/settings` → **Default screen mode** or set `[ui] screen_mode`. (If the in-place transition misbehaves in an exotic terminal, `GROK_SCREEN_MODE_SWITCH=exec` restores the old behavior of relaunching the pager onto the same session.)
 
-A handful of commands only work in one of the two modes, because the surface they drive doesn't exist in the other: `/find`, `/jump`, `/timeline`, `/theme`, `/tutorial`, and `/dashboard` are fullscreen-only, while `/expand` is minimal-only. (`/workflow runs` is different: it opens the run pane in fullscreen and degrades to a text overview in minimal rather than refusing.) Those are hidden from the command menu and the palette in the mode they can't run in. If you type one out anyway, Grok says why — and points you at whichever is actually useful. When the other mode is the only way to get it, that's the mode switch: `/theme isn't available in minimal mode (minimal renders with your terminal's own palette). Run /fullscreen to switch this session.` When this mode already does the job another way, it names that instead: `/expand isn't available in fullscreen mode: press Tab to focus the scrollback, then → on the block.` Everything else works in both. Note that `--no-alt-screen` still counts as fullscreen here, so it keeps the fullscreen-only commands.
+A handful of commands only work in one of the two modes, because the surface they drive doesn't exist in the other: `/find`, `/jump`, `/timeline`, `/theme`, and `/dashboard` are fullscreen-only, while `/expand` is minimal-only. (`/workflow runs` is different: it opens the run pane in fullscreen and degrades to a text overview in minimal rather than refusing.) Those are hidden from the command menu and the palette in the mode they can't run in. If you type one out anyway, Grok says why — and points you at whichever is actually useful. When the other mode is the only way to get it, that's the mode switch: `/theme isn't available in minimal mode (minimal renders with your terminal's own palette). Run /fullscreen to switch this session.` When this mode already does the job another way, it names that instead: `/expand isn't available in fullscreen mode: press Tab to focus the scrollback, then → on the block.` Everything else works in both. Note that `--no-alt-screen` still counts as fullscreen here, so it keeps the fullscreen-only commands.
 
 ### `/plan`
 
@@ -233,7 +233,7 @@ Open the extensions modal on the Skills tab to view installed skills.
 
 ### `/imagine <description>`
 
-Generate an image from a text description.
+Generate an image through the Codex MCP configured for the session.
 
 ```
 /imagine a golden sunset over a calm ocean with silhouetted palm trees
@@ -369,16 +369,6 @@ Browse the built-in How-to Guides, open the online Build docs, or jump straight 
 - `/docs web` opens https://docs.x.ai/build/overview in your browser.
 - `/docs <title>` opens a specific guide by case-insensitive title match.
 
-### `/tutorial`
-
-Open the onboarding tutorial: a short list of topics (your first prompt, attaching context, navigation, slash commands, worktrees, plan mode, customization, switching from another agent tool) — each a ~30-second read, with `→` flowing straight to the next topic. Nothing auto-shows — this command (or the command palette) is the way in.
-
-```
-/tutorial
-```
-
-Aliases: `/tour`, `/onboarding`
-
 ### `/import-claude`
 
 Open the Claude import modal to bring over `~/.claude` settings: permissions, environment variables, MCP servers, hooks, and paths.
@@ -403,7 +393,11 @@ Create, edit, and delete personas. A subagent can apply a persona to shape how i
 
 ### `/login`
 
-Log in or re-authenticate without leaving the session.
+Choose OpenAI, Claude, Devin, Cursor, or Grok and start its CLIProxyAPI subscription login.
+
+### `/reauth`
+
+Re-authenticate the current Grok session after a 401 response.
 
 ### `/logout`
 

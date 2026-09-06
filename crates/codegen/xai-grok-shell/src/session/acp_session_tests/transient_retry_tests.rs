@@ -71,7 +71,6 @@ fn transient_retry_eligibility_truth_table() {
         K::Auth,
         K::Serialization,
         K::RateLimited,
-        K::EmptyResponse,
         K::MaxTokensTruncation,
         K::DoomLoopDetected,
     ] {
@@ -80,6 +79,25 @@ fn transient_retry_eligibility_truth_table() {
             "{kind:?} must not enter the transient retry arm"
         );
     }
+
+    let mut reasoning_only = error_of_kind(K::EmptyResponse, None);
+    reasoning_only.empty_response_context = Some(xai_grok_sampling_types::EmptyResponseContext {
+        reason: xai_grok_sampling_types::EmptyReason::ReasoningOnly,
+        had_reasoning: true,
+        content_len: 0,
+        tool_call_count: 0,
+        finish_reason: Some("stop".to_string()),
+        completion_tokens: Some(0),
+        reasoning_tokens: Some(4096),
+        prompt_tokens: Some(128),
+        model: "fable-test".to_string(),
+        first_choice_seen: true,
+    });
+    assert!(transient_retry_eligible(&reasoning_only));
+    assert!(!transient_retry_eligible(&error_of_kind(
+        K::EmptyResponse,
+        None
+    )));
 }
 
 /// Vetoes mirror `is_retry_vetoed`: `x-should-retry: false` and context-window overflow, whatever status wrapped them.
@@ -144,6 +162,33 @@ async fn idle_timeout_first_failure_requests_resubmit() {
                 Ok(_) => panic!("expected RetryTransient, got another recovery"),
                 Err(e) => panic!("first idle timeout must not be terminal: {e:?}"),
             }
+        })
+        .await;
+}
+
+/// ACP has already rendered the partial text, so a replacement attempt would concatenate answers.
+#[tokio::test(flavor = "current_thread")]
+async fn idle_timeout_after_visible_output_does_not_resubmit() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor().await;
+            actor
+                .streaming_turn_capture
+                .lock()
+                .append(false, "partial answer");
+            let result = actor
+                .handle_sampling_failure(
+                    error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    0,
+                    transient_state(0, true),
+                    false,
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "a visible partial answer must not be retried"
+            );
         })
         .await;
 }
@@ -249,25 +294,40 @@ async fn budgeted_workflow_child_stays_terminal() {
         .await;
 }
 
-/// Empty responses stay terminal regardless of budget, the invariant the replay-buffer tests also pin for reasoning-only doom loops.
+/// A reasoning-only completion must get a turn-level retry while budget remains.
 #[tokio::test(flavor = "current_thread")]
-async fn empty_response_stays_terminal_with_full_budget() {
+async fn reasoning_only_empty_response_retries_with_full_budget() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let (actor, _rx) = make_actor().await;
+            actor
+                .streaming_turn_capture
+                .lock()
+                .append(true, "I will write the requested file now.");
+            let mut error = error_of_kind(xai_grok_sampler::SamplingErrorKind::EmptyResponse, None);
+            error.empty_response_context = Some(xai_grok_sampling_types::EmptyResponseContext {
+                reason: xai_grok_sampling_types::EmptyReason::ReasoningOnly,
+                had_reasoning: true,
+                content_len: 0,
+                tool_call_count: 0,
+                finish_reason: Some("stop".to_string()),
+                completion_tokens: Some(0),
+                reasoning_tokens: Some(4096),
+                prompt_tokens: Some(128),
+                model: "fable-test".to_string(),
+                first_choice_seen: true,
+            });
             let result = actor
-                .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::EmptyResponse, None),
-                    0,
-                    transient_state(0, true),
-                    false,
-                )
+                .handle_sampling_failure(error, 0, transient_state(0, true), false)
                 .await;
-            assert!(
-                result.is_err(),
-                "empty response must stay terminal, not enter the transient retry arm"
-            );
+            match result {
+                Ok(SamplerFailureRecovery::RetryTransient { kind, .. }) => {
+                    assert_eq!(kind, xai_grok_sampler::SamplingErrorKind::EmptyResponse);
+                }
+                Ok(_) => panic!("expected RetryTransient, got another recovery"),
+                Err(e) => panic!("reasoning-only response must retry: {e:?}"),
+            }
         })
         .await;
 }

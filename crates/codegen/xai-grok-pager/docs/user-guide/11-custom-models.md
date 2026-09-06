@@ -14,6 +14,64 @@ List all available models:
 grok models
 ```
 
+## CLIProxyAPI roster
+
+Set one OpenAI-compatible endpoint in `~/.grok/config.toml`. Grok fetches
+`/models` from this endpoint and does not add its bundled models.
+
+```toml
+[endpoints]
+models_base_url = "http://127.0.0.1:8317/v1"
+
+[models]
+default = "gpt-5.6-sol"
+allowed_models = [
+  "gpt-5.6-sol",
+  "claude-opus-5",
+  "claude-fable-5-1-medium",
+  "grok-4.6",
+  "cursor-grok-4.6-high",
+  "gemini-3-8-flash-medium",
+  "kimi-k3-high",
+]
+
+[model."gpt-5.6-sol"]
+api_backend = "responses"
+
+[compat.codex]
+skills = true
+mcps = true
+```
+
+Set the endpoint bearer key outside the file:
+
+```sh
+export OPENAI_API_KEY="your-local-proxy-key"
+```
+
+`XAI_API_KEY` remains a fallback for an existing setup. The endpoint and model
+list need no source edit. Change `models_base_url`, `default`, or
+`allowed_models` in the TOML file. Restart Grok after an endpoint change.
+Model list changes reload while Grok runs.
+
+CLIProxyAPI exposes Devin Kimi K3, Fable 5.1, and Opus 5 under the model IDs
+shown above. Provider choice stays inside CLIProxyAPI. Grok sends only the
+selected model ID.
+
+For xAI-first `grok-4.6` routing, register Cursor under the same client-visible
+name in CLIProxyAPI:
+
+```yaml
+oauth-model-alias:
+  cursor:
+    - name: "cursor-grok-4.6-high"
+      alias: "grok-4.6"
+```
+
+CLIProxyAPI gives xAI OAuth credentials priority `10`. After xAI returns `429`,
+the credential enters cooldown and the shared `grok-4.6` route can select
+Cursor. Keep `cursor-grok-4.6-high` in the Grok allowlist as a direct fallback.
+
 ---
 
 ## Selecting a Model
@@ -110,7 +168,8 @@ Grok resolves the API key in this order:
 1. The `api_key` field in the model config
 2. The environment variable(s) named by `env_key` — a single string or an array of names. The first set, non-empty value wins (for example `env_key = ["ANTHROPIC_AUTH_TOKEN", "LC_ANTHROPIC_AUTH_TOKEN"]` for SSH `LC_*` forwarding)
 3. Your signed-in session token (from `grok login`), for a model with no `api_key`/`env_key` of its own
-4. The `XAI_API_KEY` environment variable (global fallback; Grok also accepts `GROK_CODE_XAI_API_KEY` for backward compatibility)
+4. `OPENAI_API_KEY` for models fetched from a custom OpenAI-compatible endpoint
+5. The `XAI_API_KEY` environment variable. Grok also accepts `GROK_CODE_XAI_API_KEY` for backward compatibility
 
 ### Context Window
 

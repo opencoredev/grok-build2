@@ -210,12 +210,7 @@ impl SessionActor {
                     .await?
             }
         };
-        if !client.force_reauth(true).await {
-            return Err(format!(
-                "Authentication failed for MCP server '{}'",
-                server_name
-            ));
-        }
+        client.force_reauth_detailed(true).await?;
         let mcp_state_arc = self.mcp_state.clone();
         let registrations = client
             .get_tool_registrations(mcp_state_arc)

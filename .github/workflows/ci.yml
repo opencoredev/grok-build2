@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Rust and release tests
+    runs-on: tenki-standard-large-8c-16g
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 1
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      GROK_DISABLE_AUTOUPDATER: "1"
+      RUST_MIN_STACK: "16777216"
+      RUST_TEST_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config libasound2-dev libudev-dev cmake clang ruby ripgrep
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
+      - run: cargo install dotslash --version 0.5.7 --locked
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun run test:release
+      - run: cargo fmt --all -- --check
+      - name: Test changed runtime components
+        run: |
+          ulimit -n 4096
+          env -u NO_COLOR cargo test --locked -p xai-grok-sampler -p xai-grok-sampling-types -p xai-grok-mcp -p xai-grok-shell -p xai-grok-pager -p xai-grok-agent -p xai-grok-telemetry -p xai-grok-tools --lib
+      - name: Test operator documentation
+        run: cargo test --locked -p xai-grok-pager --test registered_features_are_documented
+      - name: Check binary composition
+        run: cargo check --locked -p xai-grok-pager-bin
