@@ -75,6 +75,13 @@ fn sudo_alias_injection() -> String {
 const DUMP_BASH_STATE_SCRIPT: &str = r##"
 dump_bash_state() {
   set -euo pipefail
+  # Snapshot payloads must not become environment entries under `set -a`.
+  if [[ $- == *a* ]]; then
+    set +a
+    local allexport_was_set=1
+  else
+    local allexport_was_set=0
+  fi
   if ! command -v base64 >/dev/null 2>&1; then
     echo "Error: base64 command is required" >&2
     return 1
@@ -108,7 +115,9 @@ dump_bash_state() {
   # shell-global in bash); replaying them would abort later user commands.
   local posix_opts
   posix_opts=$(builtin shopt -po 2>/dev/null | command grep -vE '^set [-+]o (nounset|errexit|pipefail)$' || true)
-  _emit_encoded "$posix_opts" "POSIX_OPTS_B64"
+  if [[ "$allexport_was_set" == 1 ]]; then
+    posix_opts+=$'\nset -o allexport'
+  fi
 
   local bash_opts
   bash_opts=$(builtin shopt -p 2>/dev/null || true)
@@ -121,6 +130,9 @@ dump_bash_state() {
   local aliases
   aliases=$(builtin alias -p 2>/dev/null || true)
   _emit_encoded "$aliases" "ALIASES_B64"
+
+  # Restore options last so decoding a large snapshot cannot export its payload.
+  _emit_encoded "$posix_opts" "POSIX_OPTS_B64"
 
   _emit "# end of bash state dump"
   _emit "__GROK_BASH_STATE_END__"
@@ -1206,6 +1218,32 @@ mod tests {
             stdout.contains("ENV_CLEAN") && !stdout.contains("LEAKED_TO_ENV"),
             "temp var must not be exported to child processes under allexport, got: {stdout:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_allexport_preserves_large_function_snapshot_bash() {
+        if !bash_available() {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let (code, _) = run_command(
+            &mut state,
+            r#"printf -v padding '%*s' 150000 ''; eval "large_fn() { : \"$padding\"; }"; unset padding; set -a"#,
+        )
+        .await;
+        assert_eq!(
+            code, 0,
+            "large function state must serialize under allexport"
+        );
+
+        let (code, stdout) = run_command(
+            &mut state,
+            "large_fn; case $- in *a*) echo ALLEXPORT_PRESERVED;; esac",
+        )
+        .await;
+        assert_eq!(code, 0, "large function state must replay under allexport");
+        assert!(stdout.contains("ALLEXPORT_PRESERVED"));
     }
 
     /// Same as the bash variant: zsh's `source`/`.` also inherits the caller's

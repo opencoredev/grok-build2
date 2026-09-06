@@ -30,11 +30,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config libasound2-dev libudev-dev cmake clang ruby
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config libasound2-dev libudev-dev cmake clang ruby ripgrep
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
       - run: cargo install dotslash --version 0.5.7 --locked
       - uses: oven-sh/setup-bun@v2
         with:

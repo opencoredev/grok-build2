@@ -50,7 +50,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: tenki-standard-medium-4c-8g
+            runner: tenki-standard-large-8c-16g
           - target: aarch64-apple-darwin
             runner: tenki-macos-15-medium
     runs-on: ${{ matrix.runner }}
