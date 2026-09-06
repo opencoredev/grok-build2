@@ -53,7 +53,7 @@ function feed(fx: ReturnType<typeof fixture>, version = "0.1.1", binaryVersion =
   const dir = join(fx.dir, `feed-${version}`); mkdirSync(dir);
   const name = basename(release.archive);
   for (const file of [name, `${name}.sha256`]) cpSync(join(fx.source, "dist", file), join(dir, file));
-  const metadata = { tag_name: `v${version}`, draft: false, prerelease: false, assets: [name, `${name}.sha256`].map(name => ({ name, browser_download_url: `https://github.com/leoisadev1/grok-build2/releases/download/v${version}/${name}` })) };
+  const metadata = { tag_name: `v${version}`, draft: false, prerelease: false, assets: [name, `${name}.sha256`].map(name => ({ name, browser_download_url: `https://github.com/opencoredev/grok-build2/releases/download/v${version}/${name}` })) };
   writeFileSync(join(dir, "latest.json"), JSON.stringify(metadata));
   return { dir, name, metadata, ...release };
 }
@@ -219,7 +219,7 @@ test("HTTP transport rejects failed requests, unsafe redirects and oversized bod
     class << Net::HTTP
       def start(*args, **options); yield FakeConnection.new; end
     end
-    Grok2Release.new(ARGV[0]).download('https://api.github.com/repos/leoisadev1/grok-build2/releases/latest', ARGV[1], 4)
+    Grok2Release.new(ARGV[0]).download('https://api.github.com/repos/opencoredev/grok-build2/releases/latest', ARGV[1], 4)
   `;
   for (const [mode, error] of [["403", "HTTP 403"], ["429", "HTTP 429"], ["timeout", "Net::ReadTimeout"], ["redirect", "Untrusted update URL"], ["oversize", "too large"]]) {
     const result = ruby(code, [fx.install, join(fx.dir, "download")], { HTTP_CASE: mode });

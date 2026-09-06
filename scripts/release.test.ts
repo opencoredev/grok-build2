@@ -40,7 +40,7 @@ test("source launcher resolves symlinks before invoking Cargo", () => {
   writeFileSync(join(commands, "cargo"), '#!/bin/sh\nexit 37\n');
   chmodSync(join(commands, "cargo"), 0o755);
   symlinkSync("../source/grok2", join(commands, "grok"));
-  const result = spawnSync(join(commands, "grok"), ["build"], { env: { ...process.env, PATH: `${commands}:${process.env.PATH}` } });
+  const result = spawnSync(join(commands, "grok"), ["build"], { env: { ...process.env, GROK2_INSTALL_DIR: join(workspace, "installed"), PATH: `${commands}:${process.env.PATH}` } });
   expect(result.status).toBe(37);
 });
 

@@ -55,7 +55,7 @@ copying either source.
 ## Installing the released binary
 
 This fork builds Linux x64 and macOS Apple Silicon archives. Use this
-repository's [releases](https://github.com/leoisadev1/grok-build2/releases),
+repository's [releases](https://github.com/opencoredev/grok-build2/releases),
 not the upstream x.ai installer, to retain the custom runtime.
 
 Download the archive and its `.sha256` file. Verify the checksum before

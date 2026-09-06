@@ -13,7 +13,7 @@ require 'rubygems/package'
 require 'rbconfig'
 
 class Grok2Release
-  REPO = 'leoisadev1/grok-build2'.freeze
+  REPO = 'opencoredev/grok-build2'.freeze
   FILES = %w[xai-grok-pager grok2 update.rb install.sh release.json LICENSE CHANGELOG.md THIRD-PARTY-NOTICES SOURCE_REV README.md].freeze
   EXECUTABLES = %w[xai-grok-pager grok2 install.sh].freeze
   TARGETS = %w[x86_64-unknown-linux-gnu aarch64-apple-darwin].freeze
