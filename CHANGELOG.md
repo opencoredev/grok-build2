@@ -1,6 +1,8 @@
 # grok-build2
 
-## 0.1.0
+## 1.0.17
+
+The first public release follows local preview 1.0.16 so existing installations can update without a downgrade.
 
 ### Minor Changes
 
