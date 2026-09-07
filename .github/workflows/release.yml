@@ -50,7 +50,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: tenki-standard-large-8c-16g
+            runner: tenki-standard-large-plus-16c-32g
           - target: aarch64-apple-darwin
             runner: tenki-macos-15-medium
     runs-on: ${{ matrix.runner }}
@@ -58,7 +58,7 @@ jobs:
     env:
       GROK_VERSION: ${{ needs.version.outputs.version }}
       GROK_DISABLE_AUTOUPDATER: "1"
-      CARGO_BUILD_JOBS: 2
+      CARGO_BUILD_JOBS: 1
     steps:
       - uses: actions/checkout@v6
         with:
@@ -75,6 +75,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+          cache-on-failure: true
       - run: cargo install dotslash --version 0.5.7 --locked
       - uses: oven-sh/setup-bun@v2
         with:
