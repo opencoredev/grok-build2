@@ -58,7 +58,7 @@ This fork builds Linux x64 and macOS Apple Silicon archives. Use this
 repository's [releases](https://github.com/opencoredev/grok-build2/releases),
 not the upstream x.ai installer, to retain the custom runtime.
 
-The first release is pending. After it is published, install the latest release:
+Install the latest release:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/opencoredev/grok-build2/main/install.sh | bash
@@ -116,10 +116,13 @@ installations need one archive install to enable updates. Use a separate
 PRs run Rust formatting, runtime tests, operator-documentation checks, binary
 compilation checks, and release-install tests on Tenki. Tests do not require
 provider credentials. Tenki Runner must be authorized for this repository.
-The workflows use `tenki-standard-medium-4c-8g` and `tenki-macos-15-medium`.
-They do not fall back to another provider when a runner is unavailable.
+PR CI uses `tenki-standard-large-8c-16g`. Linux releases use
+`tenki-standard-large-plus-16c-32g`. Darwin archives are built by a follow-up
+workflow on `tenki-macos-15-medium` so a missing macOS runner cannot hold the
+Linux release concurrency group. They do not fall back to another provider
+when a runner is unavailable.
 
-Use Bun 1.3.14 or later for release tooling:
+Use Bun 1.4.0 or later for release tooling:
 
 ```sh
 bun install --frozen-lockfile
@@ -129,14 +132,16 @@ bun run test:release
 
 Commit a changeset with each user-visible change. The Version packages workflow
 opens a version PR with the accumulated notes. Merge that PR after CI passes.
-The Release workflow reruns tests, builds both native targets, verifies the
-binary version, and publishes archives and SHA-256 files as `vVERSION`.
-Release reruns skip versions already published. No package is published to npm.
+The Release workflow reruns tests, builds the Linux archive, and uploads it as
+an artifact. A follow-up macOS workflow then builds the Darwin archive and
+publishes both archives and SHA-256 files as `vVERSION`. Release reruns skip
+versions already published. No package is published to npm.
 
 GitHub Actions must be allowed to create pull requests for the version workflow.
 It explicitly dispatches CI for the generated branch because PRs created with
-`GITHUB_TOKEN` do not trigger PR workflows. Tenki app authorization and macOS
-runner availability must be verified before a release can finish.
+`GITHUB_TOKEN` do not trigger PR workflows. Tenki app authorization is required
+for Linux CI. A missing macOS runner delays Darwin publication; it does not
+block the Linux job.
 
 ## Building from source
 

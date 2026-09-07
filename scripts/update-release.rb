@@ -19,6 +19,7 @@ class Grok2Release
   TARGETS = %w[x86_64-unknown-linux-gnu aarch64-apple-darwin].freeze
   MAX_ARCHIVE = 600 * 1024 * 1024
   MAX_EXPANDED = 1200 * 1024 * 1024
+  DOWNLOAD_TIMEOUT = 900
   INTERVAL = 6 * 60 * 60
   BOOTSTRAP = <<~'SH'.freeze
     #!/usr/bin/env bash
@@ -309,7 +310,7 @@ class Grok2Release
   def bootstrap(commands)
     target = platform_target
     Dir.mktmpdir('grok-build2-download-') do |stage|
-      Timeout.timeout(120) do
+      Timeout.timeout(DOWNLOAD_TIMEOUT) do
         release, tag, latest = latest_release(stage)
         payload = download_release(stage, release, tag, latest, target)
         install(payload, commands)
@@ -329,7 +330,7 @@ class Grok2Release
       end
       File.write(stamp, '')
       Dir.mktmpdir('.download-', @root) do |stage|
-        Timeout.timeout(120) do
+        Timeout.timeout(DOWNLOAD_TIMEOUT) do
           release, tag, latest = latest_release(stage)
           if (version(latest) <=> version(installed['version'])) != 1
             puts "Grok Build 2 #{installed['version']} is current." unless automatic
