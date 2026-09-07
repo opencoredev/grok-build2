@@ -45,15 +45,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
   build:
     needs: [version, test]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: tenki-standard-large-plus-16c-32g
-          - target: aarch64-apple-darwin
-            runner: tenki-macos-15-medium
-    runs-on: ${{ matrix.runner }}
+    runs-on: tenki-standard-large-plus-16c-32g
     timeout-minutes: 120
     env:
       GROK_VERSION: ${{ needs.version.outputs.version }}
@@ -64,50 +56,26 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config libasound2-dev libudev-dev cmake clang
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
-        run: brew install protobuf
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-x86_64-unknown-linux-gnu
           cache-on-failure: true
       - run: cargo install dotslash --version 0.5.7 --locked
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - run: cargo build --locked --profile release-dist --features release-dist -p xai-grok-pager-bin --target ${{ matrix.target }}
+      - run: cargo build --locked --profile release-dist --features release-dist -p xai-grok-pager-bin --target x86_64-unknown-linux-gnu
       - name: Check binary version
-        run: target/${{ matrix.target }}/release-dist/xai-grok-pager --version | grep -F "$GROK_VERSION"
+        run: target/x86_64-unknown-linux-gnu/release-dist/xai-grok-pager --version | grep -F "$GROK_VERSION"
       - name: Package binary and launcher
-        run: bun run release:package ${{ matrix.target }} target/${{ matrix.target }}/release-dist/xai-grok-pager
+        run: bun run release:package x86_64-unknown-linux-gnu target/x86_64-unknown-linux-gnu/release-dist/xai-grok-pager
       - uses: actions/upload-artifact@v4
         with:
-          name: grok-build2-${{ matrix.target }}
+          name: grok-build2-x86_64-unknown-linux-gnu
           path: dist/*
           if-no-files-found: error
-  publish:
-    needs: [version, build]
-    runs-on: tenki-standard-medium-4c-8g
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: grok-build2-*
-          merge-multiple: true
-          path: dist
-      - name: Publish checked release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          test "$(find dist -name '*.tar.gz' | wc -l | tr -d ' ')" = 2
-          (cd dist && sha256sum -c ./*.sha256)
-          gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "Grok Build 2 v$VERSION" --notes-file CHANGELOG.md
+          retention-days: 14

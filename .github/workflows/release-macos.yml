@@ -1,0 +1,111 @@
+name: Release macOS
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-macos
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: tenki-standard-medium-4c-8g
+    timeout-minutes: 10
+    outputs:
+      needed: ${{ steps.gate.outputs.needed }}
+      version: ${{ steps.gate.outputs.version }}
+      sha: ${{ steps.gate.outputs.sha }}
+      run-id: ${{ steps.gate.outputs.run-id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Decide whether darwin still needs publishing
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id || '' }}
+        run: |
+          version=$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' package.json)
+          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch main --status success --limit 30 --json databaseId,headSha | jq -r --arg sha "$sha" 'map(select(.headSha == $sha)) | .[0].databaseId // empty')
+          fi
+          echo "run-id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          if [ -z "$RUN_ID" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[].name | select(. == "grok-build2-x86_64-unknown-linux-gnu")] | length')
+          if [ "$count" != 1 ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "v$version" --json assets --jq '[.assets[].name | select(endswith(".tar.gz"))] | length' 2>/dev/null | grep -qx 2; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+  build:
+    needs: gate
+    if: needs.gate.outputs.needed == 'true'
+    runs-on: tenki-macos-15-medium
+    timeout-minutes: 120
+    env:
+      GROK_VERSION: ${{ needs.gate.outputs.version }}
+      GROK_DISABLE_AUTOUPDATER: "1"
+      CARGO_BUILD_JOBS: 1
+      CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Install macOS dependencies
+        run: brew install protobuf
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-aarch64-apple-darwin
+          cache-on-failure: true
+      - run: cargo install dotslash --version 0.5.7 --locked
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: cargo build --locked --profile release-dist --features release-dist -p xai-grok-pager-bin --target aarch64-apple-darwin
+      - name: Check binary version
+        run: target/aarch64-apple-darwin/release-dist/xai-grok-pager --version | grep -F "$GROK_VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ needs.gate.outputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: grok-build2-x86_64-unknown-linux-gnu
+          path: dist
+      - name: Package darwin archive
+        run: bun run release:package aarch64-apple-darwin target/aarch64-apple-darwin/release-dist/xai-grok-pager
+      - name: Publish checked release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          test "$(find dist -name '*.tar.gz' | wc -l | tr -d ' ')" = 2
+          (cd dist && shasum -a 256 -c ./*.sha256)
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" dist/* --clobber
+          else
+            gh release create "v$VERSION" dist/* --target "$SHA" --title "Grok Build 2 v$VERSION" --notes-file CHANGELOG.md
+          fi

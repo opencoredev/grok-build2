@@ -70,6 +70,10 @@ function feed(fx: ReturnType<typeof fixture>, version = "0.1.1", binaryVersion =
 }
 function current(fx: ReturnType<typeof fixture>) { return readlinkSync(join(fx.install, "current")); }
 
+test("release downloads allow the published linux archive size", () => {
+  expect(ruby("print Grok2Release::DOWNLOAD_TIMEOUT").stdout).toBe("900");
+});
+
 test("bootstrap installs the latest release through the root installer", () => {
   const fx = fixture(); const next = feed(fx); const install = join(fx.dir, "fresh"); const commands = join(fx.dir, "fresh-bin");
   const mocks = join(fx.dir, "bootstrap-mocks"); mkdirSync(mocks);
