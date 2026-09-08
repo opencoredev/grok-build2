@@ -1,5 +1,11 @@
 # grok-build2
 
+## 1.0.18
+
+### Patch Changes
+
+- 53dd4c2: Add Devin SWE-1.7 and SWE-1.7 Lightning to the CLIProxyAPI roster so they appear in the TUI model picker.
+
 ## 1.0.17
 
 The first public release follows local preview 1.0.16 so existing installations can update without a downgrade.
