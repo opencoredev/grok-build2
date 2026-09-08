@@ -33,10 +33,24 @@ allowed_models = [
   "cursor-grok-4.6-high",
   "gemini-3-8-flash-medium",
   "kimi-k3-high",
+  "swe-1-7",
+  "swe-1-7-lightning",
 ]
 
 [model."gpt-5.6-sol"]
 api_backend = "responses"
+
+[model."swe-1-7"]
+name = "Devin / SWE-1.7"
+api_backend = "chat_completions"
+context_window = 262144
+max_completion_tokens = 128000
+
+[model."swe-1-7-lightning"]
+name = "Devin / SWE-1.7 Lightning"
+api_backend = "chat_completions"
+context_window = 202752
+max_completion_tokens = 128000
 
 [compat.codex]
 skills = true
@@ -54,9 +68,9 @@ list need no source edit. Change `models_base_url`, `default`, or
 `allowed_models` in the TOML file. Restart Grok after an endpoint change.
 Model list changes reload while Grok runs.
 
-CLIProxyAPI exposes Devin Kimi K3, Fable 5.1, and Opus 5 under the model IDs
-shown above. Provider choice stays inside CLIProxyAPI. Grok sends only the
-selected model ID.
+CLIProxyAPI exposes Devin Kimi K3, Fable 5.1, Opus 5, SWE-1.7, and SWE-1.7
+Lightning under the model IDs shown above. Provider choice stays inside
+CLIProxyAPI. Grok sends only the selected model ID.
 
 For xAI-first `grok-4.6` routing, register Cursor under the same client-visible
 name in CLIProxyAPI:
