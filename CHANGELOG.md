@@ -1,5 +1,11 @@
 # grok-build2
 
+## 1.0.20
+
+### Patch Changes
+
+- Sync upstream grok-build through 2bdd1d6a.
+
 ## 1.0.18
 
 ### Patch Changes

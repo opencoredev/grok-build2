@@ -21,9 +21,11 @@ See `xai-grok-config-types/src/registry.rs` for defaults and precedence.
 | `GROK_BACKEND_SEARCH` | `backend_tools` |
 | `GROK_AUTO_WAKE` | `auto_wake` |
 | `GROK_SUBAGENT_WORKTREE_SNAPSHOT` | `subagent_worktree_snapshot` |
+| `GROK_SUBAGENT_MODEL_INHERITANCE` | `subagent_model_inheritance` |
 | `GROK_ACTIVE_AGENT_MESSAGES` | `active_agent_messages` |
-| `GROK_REPO_STATUS_IN_SYSTEM_PROMPT` | `repo_status_in_system_prompt` |
 | `GROK_DOCK` | `dock` |
+| `GROK_TERMINAL_THEME` | `terminal_theme` |
+| `GROK_FILE_ACCELERATION` | `file_acceleration` |
 
 `GROK_CONFIG` is a filtered configuration overlay. Its allowed keys are defined
 by the loader, and it does not override enterprise security requirements.
