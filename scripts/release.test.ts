@@ -27,6 +27,20 @@ test("packaging reads the installed updater's size limits and rejects releases o
   expect(() => checkUpdaterLimits({ archiveBytes: limits.maxArchiveBytes + 1, expandedBytes: 1 }, limits)).toThrow("MAX_ARCHIVE");
 });
 
+test("packaging deletes and rejects an archive the updater would refuse", () => {
+  const workspace = temp();
+  mkdirSync(join(workspace, "scripts"));
+  for (const file of ["grok2", "LICENSE", "CHANGELOG.md", "THIRD-PARTY-NOTICES", "SOURCE_REV", "README.md", "scripts/install-release.sh"]) cpSync(join(root, file), join(workspace, file));
+  const updater = readFileSync(join(root, "scripts/update-release.rb"), "utf8").replace(/^(\s*MAX_EXPANDED = )\d+( \* 1024 \* 1024)$/m, "$10$2");
+  expect(updater).toContain("MAX_EXPANDED = 0 * 1024 * 1024");
+  writeFileSync(join(workspace, "scripts/update-release.rb"), updater);
+  const fakeBinary = join(workspace, "fake-binary");
+  writeFileSync(fakeBinary, "#!/bin/sh\n");
+  const target = process.platform === "darwin" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-gnu";
+  expect(() => packageRelease(workspace, fakeBinary, "0.1.0", target)).toThrow("MAX_EXPANDED");
+  expect(existsSync(join(workspace, "dist", archiveName("0.1.0", target)))).toBe(false);
+});
+
 test("Changesets versions the private binary package without npm publishing", () => {
   const workspace = temp();
   mkdirSync(join(workspace, ".changeset"));
