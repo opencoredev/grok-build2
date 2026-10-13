@@ -1,5 +1,11 @@
 # grok-build2
 
+## 1.0.21
+
+### Patch Changes
+
+- Strip debug info from release binaries so installed updaters accept them (1.0.20 unpacked to 1211 MiB, over the 1200 MiB limit), and fail packaging when a release exceeds the updater's limits.
+
 ## 1.0.20
 
 ### Patch Changes

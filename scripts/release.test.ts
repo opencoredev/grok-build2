@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { archiveName, packageRelease } from "./release";
+import { archiveName, checkUpdaterLimits, packageRelease, updaterLimits } from "./release";
 
 const root = resolve(import.meta.dir, "..");
 const temporary: string[] = [];
@@ -15,6 +15,30 @@ test("archive names reject unsupported targets and unsafe versions", () => {
   expect(archiveName("0.1.0", "aarch64-apple-darwin")).toBe("grok-build2-0.1.0-aarch64-apple-darwin.tar.gz");
   expect(() => archiveName("../../escape", "aarch64-apple-darwin")).toThrow();
   expect(() => archiveName("0.1.0", "../../escape")).toThrow();
+});
+
+test("packaging reads the installed updater's size limits and rejects releases over them", () => {
+  const limits = updaterLimits(readFileSync(join(root, "scripts/update-release.rb"), "utf8"));
+  expect(limits).toEqual({ maxArchiveBytes: 600 * 1024 * 1024, maxExpandedBytes: 1200 * 1024 * 1024 });
+  expect(() => updaterLimits("  MAX_ARCHIVE = 1 * 1024 * 1024\n")).toThrow("MAX_EXPANDED");
+  expect(() => checkUpdaterLimits({ archiveBytes: 1, expandedBytes: limits.maxExpandedBytes }, limits)).not.toThrow();
+  // 1.0.20 shipped with line-table DWARF: 1210 MiB unpacked, which every installed updater refused.
+  expect(() => checkUpdaterLimits({ archiveBytes: 253 * 1024 * 1024, expandedBytes: 1210 * 1024 * 1024 }, limits)).toThrow("MAX_EXPANDED");
+  expect(() => checkUpdaterLimits({ archiveBytes: limits.maxArchiveBytes + 1, expandedBytes: 1 }, limits)).toThrow("MAX_ARCHIVE");
+});
+
+test("packaging deletes and rejects an archive the updater would refuse", () => {
+  const workspace = temp();
+  mkdirSync(join(workspace, "scripts"));
+  for (const file of ["grok2", "LICENSE", "CHANGELOG.md", "THIRD-PARTY-NOTICES", "SOURCE_REV", "README.md", "scripts/install-release.sh"]) cpSync(join(root, file), join(workspace, file));
+  const updater = readFileSync(join(root, "scripts/update-release.rb"), "utf8").replace(/^(\s*MAX_EXPANDED = )\d+( \* 1024 \* 1024)$/m, "$10$2");
+  expect(updater).toContain("MAX_EXPANDED = 0 * 1024 * 1024");
+  writeFileSync(join(workspace, "scripts/update-release.rb"), updater);
+  const fakeBinary = join(workspace, "fake-binary");
+  writeFileSync(fakeBinary, "#!/bin/sh\n");
+  const target = process.platform === "darwin" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-gnu";
+  expect(() => packageRelease(workspace, fakeBinary, "0.1.0", target)).toThrow("MAX_EXPANDED");
+  expect(existsSync(join(workspace, "dist", archiveName("0.1.0", target)))).toBe(false);
 });
 
 test("Changesets versions the private binary package without npm publishing", () => {

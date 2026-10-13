@@ -69,6 +69,10 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: cargo build --locked --profile release-dist --features release-dist -p xai-grok-pager-bin --target x86_64-unknown-linux-gnu
+      # Line-table DWARF is ~85% of the binary and pushes it past the updater's MAX_EXPANDED.
+      # Symbols stay, so opt-in local crash reports keep function names but lose file:line.
+      - name: Strip debug info
+        run: strip --strip-debug target/x86_64-unknown-linux-gnu/release-dist/xai-grok-pager
       - name: Check binary version
         run: target/x86_64-unknown-linux-gnu/release-dist/xai-grok-pager --version | grep -F "$GROK_VERSION"
       - name: Package binary and launcher
