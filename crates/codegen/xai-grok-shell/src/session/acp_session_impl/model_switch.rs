@@ -234,12 +234,11 @@ impl SessionActor {
                 .await;
         }
         if self.agent.borrow().prompt_context().system_prompt_label != pending.system_prompt_label {
-            // A turn started during the re-render: retry after it, unless a newer switch replaced the request.
-            if self.state.lock().await.running_task.is_some() {
-                let mut slot = self.pending_identity.borrow_mut();
-                if slot.is_none() {
-                    *slot = Some(pending);
-                }
+            // The re-render failed or a turn started during it: retry before the next turn,
+            // unless a newer switch replaced the request.
+            let mut slot = self.pending_identity.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(pending);
             }
             return;
         }
