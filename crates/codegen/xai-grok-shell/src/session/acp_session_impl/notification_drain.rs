@@ -120,6 +120,8 @@ impl SessionActor {
         self: Arc<Self>,
         completion_tx: mpsc::UnboundedSender<super::turn_task::TurnCompletionMsg>,
     ) {
+        // A model switch during the finished turn deferred its identity; apply it before the next turn starts.
+        self.apply_pending_identity().await;
         // Fast path under the lock: nothing to promote.
         let may_combine;
         let queued_wake_ids: Vec<String>;

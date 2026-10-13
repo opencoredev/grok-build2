@@ -124,34 +124,35 @@ impl SessionActor {
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
         // A model identity change re-renders the prompt even when the harness was just rebuilt.
-        let identity_relabeled = if apply_prompt_override
-            && self.agent.borrow().prompt_context().system_prompt_label != system_prompt_label
-        {
-            if self.state.lock().await.running_task.is_some() {
-                tracing::warn!(
-                    session_id = %self.session_info.id.0,
-                    model_id = %model_id.0,
-                    "system_prompt_label relabel skipped: turn in flight"
-                );
-                false
-            } else {
-                self.relabel_agent_system_prompt(system_prompt_label.clone())
-                    .await;
-                self.agent.borrow().prompt_context().system_prompt_label == system_prompt_label
-            }
-        } else {
+        let identity_relabeled = if !apply_prompt_override {
             false
+        } else if self.agent.borrow().prompt_context().system_prompt_label == system_prompt_label {
+            // Switching back to the active identity cancels a deferred relabel.
+            self.pending_identity.borrow_mut().take();
+            false
+        } else if self.state.lock().await.running_task.is_some() {
+            // The running turn pins the agent, so the relabel waits for the turn to end.
+            // A later switch replaces this request.
+            tracing::info!(
+                session_id = %self.session_info.id.0,
+                model_id = %model_id.0,
+                %system_prompt_label,
+                "system_prompt_label relabel deferred: turn in flight"
+            );
+            *self.pending_identity.borrow_mut() =
+                Some(crate::session::acp_session::PendingIdentity {
+                    system_prompt_label,
+                    use_concise,
+                });
+            false
+        } else {
+            self.pending_identity.borrow_mut().take();
+            self.relabel_agent_system_prompt(system_prompt_label.clone())
+                .await;
+            self.agent.borrow().prompt_context().system_prompt_label == system_prompt_label
         };
         if apply_prompt_override && (!skip_prompt_rewrite || identity_relabeled) {
-            let active_prompt = self.agent.borrow().system_prompt().to_string();
-            let mut conversation = self.chat_state_handle.get_conversation().await;
-            let prompt = if use_concise {
-                xai_grok_agent::prompt::template::COMPACT_SYSTEM_PROMPT
-            } else {
-                active_prompt.as_str()
-            };
-            let _ = replace_or_insert_system_head(&mut conversation, prompt);
-            self.chat_state_handle.replace_conversation(conversation);
+            self.rewrite_system_head(use_concise).await;
         } else if !apply_prompt_override {
             tracing::info!(
                 session_id = %self.session_info.id.0,
@@ -205,6 +206,45 @@ impl SessionActor {
         Ok(model_id)
     }
     /// `running_task` is re-checked with no await before the `borrow_mut`: a running turn pins `Ref<Agent>`.
+    /// Install the agent's current system prompt (or the concise prompt) as the conversation's system head.
+    async fn rewrite_system_head(&self, use_concise: bool) {
+        let active_prompt = self.agent.borrow().system_prompt().to_string();
+        let mut conversation = self.chat_state_handle.get_conversation().await;
+        let prompt = if use_concise {
+            xai_grok_agent::prompt::template::COMPACT_SYSTEM_PROMPT
+        } else {
+            active_prompt.as_str()
+        };
+        let _ = replace_or_insert_system_head(&mut conversation, prompt);
+        self.chat_state_handle.replace_conversation(conversation);
+    }
+    /// Apply a model identity that a switch deferred because a turn was running.
+    /// Called before the next turn can start; a no-op while a turn is still in flight.
+    pub(super) async fn apply_pending_identity(&self) {
+        if self.pending_identity.borrow().is_none()
+            || self.state.lock().await.running_task.is_some()
+        {
+            return;
+        }
+        let Some(pending) = self.pending_identity.borrow_mut().take() else {
+            return;
+        };
+        if self.agent.borrow().prompt_context().system_prompt_label != pending.system_prompt_label {
+            self.relabel_agent_system_prompt(pending.system_prompt_label.clone())
+                .await;
+        }
+        if self.agent.borrow().prompt_context().system_prompt_label != pending.system_prompt_label {
+            // A turn started during the re-render: retry after it, unless a newer switch replaced the request.
+            if self.state.lock().await.running_task.is_some() {
+                let mut slot = self.pending_identity.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(pending);
+                }
+            }
+            return;
+        }
+        self.rewrite_system_head(pending.use_concise).await;
+    }
     pub(super) async fn relabel_agent_system_prompt(&self, system_prompt_label: String) {
         let (mut prompt_context, tool_bridge) = {
             let agent = self.agent.borrow();

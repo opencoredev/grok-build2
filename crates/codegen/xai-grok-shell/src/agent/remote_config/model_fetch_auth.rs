@@ -2,7 +2,7 @@
 
 use indexmap::IndexMap;
 
-use crate::agent::auth_method::read_xai_api_key_env;
+use crate::agent::auth_method::{read_openai_compatible_api_key_env, read_xai_api_key_env};
 use crate::agent::config::{self, ModelEntry};
 use crate::remote::{ModelSource, active_model_source};
 use xai_grok_cloud_config::remote_settings::{CacheAuthMethod, ModelsCacheScope, scope_hash};
@@ -81,10 +81,14 @@ pub(in crate::agent::remote_config) fn resolve_models_cache_scope(
             endpoints.deployment_key.as_deref().unwrap_or(""),
             alpha.unwrap_or(""),
         ]),
-        // Custom endpoints authenticate with `XAI_API_KEY`, else an external provider token.
+        // Custom endpoints authenticate with `OPENAI_API_KEY`, then `XAI_API_KEY`, else an external provider token,
+        // the same order the `/models` fetch uses. The key only enters the hash.
         // Any other login identity never scopes this cache.
         ModelFetchAuth::CustomEndpoint => {
-            match (read_xai_api_key_env(), external_provider_auth(auth)) {
+            match (
+                read_openai_compatible_api_key_env(),
+                external_provider_auth(auth),
+            ) {
                 (Err(_), Some(provider)) => scope_hash(&[
                     "models-custom-endpoint-external",
                     origin.as_str(),

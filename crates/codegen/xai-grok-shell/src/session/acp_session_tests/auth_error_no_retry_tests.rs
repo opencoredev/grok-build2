@@ -1636,6 +1636,119 @@ async fn set_session_model_rewrites_the_active_model_identity() {
         .await;
 }
 
+fn identity_switch(
+    sampling_config: xai_grok_sampler::SamplerConfig,
+    system_prompt_label: &str,
+) -> crate::session::SessionModelSwitch {
+    crate::session::SessionModelSwitch {
+        sampling_config,
+        use_concise: false,
+        is_family_switch: false,
+        apply_prompt_override: true,
+        skip_prompt_rewrite: true,
+        auto_compact_threshold_percent: 85,
+        system_prompt_label: system_prompt_label.to_string(),
+        context_window_selection: SwitchContextWindow::Set(None),
+        supported_context_windows: Vec::new(),
+    }
+}
+
+async fn conversation_system_head(actor: &SessionActor) -> String {
+    actor
+        .chat_state_handle
+        .get_conversation()
+        .await
+        .iter()
+        .find_map(|item| match item {
+            xai_grok_sampling_types::ConversationItem::System(system) => {
+                Some(system.content.to_string())
+            }
+            _ => None,
+        })
+        .expect("system prompt")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn set_session_model_during_a_turn_applies_the_identity_after_the_turn() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_method_and_credentials(
+                None,
+                "cached_token",
+                xai_chat_state::AuthType::SessionToken,
+                "k".to_string(),
+            )
+            .await;
+            let original_label = actor
+                .agent
+                .borrow()
+                .prompt_context()
+                .system_prompt_label
+                .clone();
+            actor.state.lock().await.running_task =
+                Some(super::support::running_task_stub("identity-turn"));
+
+            let config = actor.reconstruct_full_config().await;
+            actor
+                .handle_set_session_model(identity_switch(config.clone(), "Claude Opus 5.5"))
+                .await
+                .expect("first switch");
+            actor
+                .handle_set_session_model(identity_switch(config.clone(), "Claude Fable 5.1"))
+                .await
+                .expect("second switch");
+            assert_eq!(
+                actor.agent.borrow().prompt_context().system_prompt_label,
+                original_label,
+                "the agent is not relabeled while the turn runs"
+            );
+
+            actor.state.lock().await.running_task = None;
+            let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
+            SessionActor::maybe_start_running_task(actor.clone(), completion_tx.clone()).await;
+
+            let agent = actor.agent.borrow();
+            assert_eq!(
+                agent.prompt_context().system_prompt_label,
+                "Claude Fable 5.1",
+                "the latest switch during the turn wins"
+            );
+            assert!(
+                agent
+                    .system_prompt()
+                    .starts_with("You are Claude Fable 5.1.")
+            );
+            drop(agent);
+            assert!(
+                conversation_system_head(&actor)
+                    .await
+                    .starts_with("You are Claude Fable 5.1.")
+            );
+            assert!(actor.pending_identity.borrow().is_none());
+
+            // A switch back to the active identity during a turn cancels the deferred relabel.
+            actor.state.lock().await.running_task =
+                Some(super::support::running_task_stub("identity-turn-2"));
+            actor
+                .handle_set_session_model(identity_switch(config.clone(), "Claude Opus 5.5"))
+                .await
+                .expect("third switch");
+            actor
+                .handle_set_session_model(identity_switch(config, "Claude Fable 5.1"))
+                .await
+                .expect("switch back");
+            assert!(actor.pending_identity.borrow().is_none());
+            actor.state.lock().await.running_task = None;
+            SessionActor::maybe_start_running_task(actor.clone(), completion_tx).await;
+            assert_eq!(
+                actor.agent.borrow().prompt_context().system_prompt_label,
+                "Claude Fable 5.1"
+            );
+        })
+        .await;
+}
+
 use xai_grok_login::test_counting_provider as counting_provider;
 
 /// Seed the per-model memo so `model_auth_provider` resolves without a config load.

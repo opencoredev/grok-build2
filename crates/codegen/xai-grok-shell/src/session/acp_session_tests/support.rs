@@ -420,6 +420,7 @@ async fn create_test_actor_inner(
         },
         session_start: std::time::Instant::now(),
         inference_idle_timeout: std::cell::Cell::new(Duration::from_secs(300)),
+        pending_identity: Default::default(),
         uncharged_401_park_enabled: true,
         max_retries: 3,
         rate_limit_waits: crate::session::acp_session::RateLimitWaitConfig::default(),

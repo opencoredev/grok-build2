@@ -852,6 +852,9 @@ pub(crate) struct SessionActor {
     /// Remote kill switch (`uncharged_401_park`), resolved once at spawn —
     /// see `resolve_uncharged_401_park`.
     pub(crate) uncharged_401_park_enabled: bool,
+    /// Model identity requested by a switch while a turn was running.
+    /// The agent is not relabeled mid-turn; this is applied once the turn ends.
+    pub(crate) pending_identity: std::cell::RefCell<Option<PendingIdentity>>,
     pub(crate) max_retries: u32,
     /// Fixed bounds on a subagent turn's 429 waiting.
     pub(crate) rate_limit_waits: RateLimitWaitConfig,
@@ -2285,3 +2288,10 @@ mod recap_display_only_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/reminder_policy_tests.rs"]
 mod reminder_policy_tests;
+
+/// A model identity switch deferred until the running turn ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingIdentity {
+    pub(crate) system_prompt_label: String,
+    pub(crate) use_concise: bool,
+}

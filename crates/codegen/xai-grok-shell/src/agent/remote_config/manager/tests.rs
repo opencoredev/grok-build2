@@ -1544,6 +1544,7 @@ fn api_key_scope_identity_differs_per_key() {
 #[test]
 #[serial]
 fn custom_endpoint_scope_identity_differs_per_key() {
+    let _no_openai_key = EnvGuard::unset("OPENAI_API_KEY");
     let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
     let endpoints = config::EndpointsConfig::default();
     let identity_for = |key: &str| {
@@ -1563,7 +1564,36 @@ fn custom_endpoint_scope_identity_differs_per_key() {
 }
 #[test]
 #[serial]
+fn custom_endpoint_scope_identity_follows_the_openai_key() {
+    let _no_xai_key = EnvGuard::unset("XAI_API_KEY");
+    let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let endpoints = config::EndpointsConfig::default();
+    let identity_for = |key: &str| {
+        let _key = EnvGuard::set("OPENAI_API_KEY", key);
+        resolve_models_cache_scope(&endpoints, ModelFetchAuth::CustomEndpoint, None).identity
+    };
+    let openai_a = identity_for("openai-key-a");
+    assert_eq!(openai_a, identity_for("openai-key-a"));
+    assert_ne!(
+        openai_a,
+        identity_for("openai-key-b"),
+        "changing only OPENAI_API_KEY must not reuse the previous key's model list",
+    );
+    assert!(
+        !openai_a.contains("openai-key-a"),
+        "the cache identity must not carry the raw key",
+    );
+    let _xai_key = EnvGuard::set("XAI_API_KEY", "xai-key");
+    assert_eq!(
+        openai_a,
+        identity_for("openai-key-a"),
+        "OPENAI_API_KEY wins over XAI_API_KEY, as in the fetch",
+    );
+}
+#[test]
+#[serial]
 fn custom_endpoint_scope_ignores_session_identity() {
+    let _no_openai_key = EnvGuard::unset("OPENAI_API_KEY");
     let _no_key = EnvGuard::unset("XAI_API_KEY");
     let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
     let endpoints = config::EndpointsConfig::default();
@@ -1585,6 +1615,7 @@ fn custom_endpoint_scope_ignores_session_identity() {
 #[test]
 #[serial]
 fn custom_endpoint_scope_keys_on_the_third_party_provider_login() {
+    let _no_openai_key = EnvGuard::unset("OPENAI_API_KEY");
     let _no_key = EnvGuard::unset("XAI_API_KEY");
     let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
     let endpoints = config::EndpointsConfig::default();

@@ -1945,6 +1945,7 @@ pub(crate) async fn spawn_session_actor(
         inference_idle_timeout: std::cell::Cell::new(Duration::from_secs(
             inference_idle_timeout_secs,
         )),
+        pending_identity: Default::default(),
         uncharged_401_park_enabled: crate::util::config::resolve_uncharged_401_park(
             remote_settings.as_ref().and_then(|r| r.uncharged_401_park),
         ),
