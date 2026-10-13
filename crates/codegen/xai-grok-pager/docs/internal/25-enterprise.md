@@ -22,9 +22,11 @@ test checks that each registered feature appears here.
 | `backend_tools` | Server-side search tools |
 | `auto_wake` | Continuation after background work |
 | `subagent_worktree_snapshot` | Saved subagent worktrees |
+| `subagent_model_inheritance` | Subagents inherit the parent model when every pickable model is an xAI model |
 | `active_agent_messages` | Messages to active descendants |
-| `repo_status_in_system_prompt` | Repository status in the prompt |
 | `dock` | Consolidated activity panel |
+| `terminal_theme` | Terminal-native color theme |
+| `file_acceleration` | File accelerator for local sessions |
 
 This fork disables network telemetry independently of these feature controls.
 Enabling a feedback feature does not enable network telemetry.
